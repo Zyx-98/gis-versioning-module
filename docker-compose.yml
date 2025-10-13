@@ -37,7 +37,7 @@ services:
       DB_PASSWORD: password
       DB_NAME: gis_versioning
       JWT_SECRET: secret-key
-      JWT_EXPIRATION: 3600
+      JWT_EXPIRATION: 360000
       REDIS_HOST: redis
       REDIS_PORT: 6379
       QUEUE_REDIS_HOST: redis

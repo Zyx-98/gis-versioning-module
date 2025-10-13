@@ -94,6 +94,7 @@ export class InitialSchema1760170415841 implements MigrationInterface {
         "status" feature_status_enum DEFAULT 'active',
         "version" int DEFAULT 1,
         "parent_feature_id" uuid,
+        "parent_version" int NULL,
         "created_by" uuid NOT NULL,
         "updated_by" uuid,
         "created_at" TIMESTAMP NOT NULL DEFAULT now(),
