@@ -6,7 +6,7 @@ import {
   Logger,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, DataSource, DeepPartial } from 'typeorm';
+import { Repository, DataSource } from 'typeorm';
 import {
   CreateDatasetDto,
   CheckoutBranchDto,
@@ -572,63 +572,71 @@ export class GISVersioningService {
     targetFeatures.forEach((f) => targetFeaturesMap.set(f.id, f));
 
     for (const sourceFeature of sourceFeatures) {
-      let changeType: ChangeType;
-      let beforeData: DeepPartial<Feature> | null = null;
+      let changeType: ChangeType | null = null;
+      let beforeData: any = null;
+      let targetFeature: Feature | undefined;
       let hasConflict = false;
 
       if (!sourceFeature.parentFeatureId) {
-        // New feature added
         changeType = ChangeType.ADD;
-      } else if (sourceFeature.status === FeatureStatus.DELETED) {
-        // Feature deleted
-        changeType = ChangeType.DELETE;
-        const targetFeature =
-          targetFeaturesMap.get(sourceFeature.parentFeatureId) || null;
-        beforeData = targetFeature
-          ? {
-              geometry: targetFeature.geometry,
-              properties: targetFeature.properties,
-              version: targetFeature.version,
-            }
-          : null;
+        beforeData = null;
       } else {
-        // Feature modified
-        changeType = ChangeType.MODIFY;
-        const targetFeature = targetFeaturesMap.get(
-          sourceFeature.parentFeatureId,
+        targetFeature = targetFeaturesMap.get(sourceFeature.parentFeatureId);
+
+        if (!targetFeature) {
+          this.logger.warn(
+            `Parent feature ${sourceFeature.parentFeatureId} not found in target branch`,
+          );
+          continue;
+        }
+
+        if (sourceFeature.status === FeatureStatus.DELETED) {
+          changeType = ChangeType.DELETE;
+          beforeData = {
+            geometry: targetFeature.geometry,
+            properties: targetFeature.properties,
+            version: targetFeature.version,
+            status: targetFeature.status,
+          };
+        } else if (sourceFeature.version > (sourceFeature.parentVersion || 0)) {
+          changeType = ChangeType.MODIFY;
+          beforeData = {
+            geometry: targetFeature.geometry,
+            properties: targetFeature.properties,
+            version: targetFeature.version,
+            status: targetFeature.status,
+          };
+        }
+      }
+
+      if (changeType !== null) {
+        const conflict = conflicts.find(
+          (c) => c.featureId === sourceFeature.id,
         );
-        beforeData = targetFeature
-          ? {
-              geometry: targetFeature.geometry,
-              properties: targetFeature.properties,
-              version: targetFeature.version,
-            }
-          : null;
+        if (conflict) {
+          hasConflict = true;
+        }
+
+        const featureChange = this.featureChangeRepo.create({
+          mergeRequestId,
+          featureId: sourceFeature.id,
+          changeType,
+          beforeData,
+          afterData: {
+            geometry: sourceFeature.geometry,
+            properties: sourceFeature.properties,
+            version: sourceFeature.version,
+            status: sourceFeature.status,
+          },
+          hasConflict,
+          conflictData: conflict || null,
+        });
+
+        await this.featureChangeRepo.save(featureChange);
       }
-
-      // Check if this feature has a conflict
-      const conflict = conflicts.find((c) => c.featureId === sourceFeature.id);
-      if (conflict) {
-        hasConflict = true;
-      }
-
-      const featureChange = this.featureChangeRepo.create({
-        mergeRequestId,
-        featureId: sourceFeature.id,
-        changeType,
-        beforeData,
-        afterData: {
-          geometry: sourceFeature.geometry,
-          properties: sourceFeature.properties,
-          version: sourceFeature.version,
-          status: sourceFeature.status,
-        },
-        hasConflict,
-        conflictData: conflict || null,
-      });
-
-      await this.featureChangeRepo.save(featureChange);
     }
+
+    this.logger.log(`Tracked changes for merge request ${mergeRequestId}`);
   }
 
   async getBranchChanges(branchId: string): Promise<{
@@ -658,7 +666,6 @@ export class GISVersioningService {
       parentFeature?: Feature;
     }> = [];
 
-    // Get all features in the working branch
     const branchFeatures = await this.featureRepo.find({
       where: { branchId: branch.id },
     });
@@ -686,7 +693,6 @@ export class GISVersioningService {
         continue;
       }
 
-      // Check if deleted
       if (branchFeature.status === FeatureStatus.DELETED) {
         changes.push({
           feature: branchFeature,
@@ -696,7 +702,6 @@ export class GISVersioningService {
         continue;
       }
 
-      // Check if modified (version increased from parent)
       if (branchFeature.version > (branchFeature.parentVersion || 0)) {
         changes.push({
           feature: branchFeature,
