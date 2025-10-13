@@ -1,4 +1,3 @@
-// src/gis-versioning/services/conflict-resolution.service.ts
 import {
   Injectable,
   NotFoundException,

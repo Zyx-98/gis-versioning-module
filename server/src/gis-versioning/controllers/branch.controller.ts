@@ -90,6 +90,25 @@ export class BranchController {
     return await this.gisService.checkForUpdates(branchId);
   }
 
+  @Get(':branchId/changes')
+  @ApiOperation({
+    summary: 'Get all changes made in this branch',
+    description:
+      'Returns all features that were added, modified, or deleted in this working branch compared to the main branch. Use this to preview changes before creating a merge request.',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Branch changes retrieved successfully',
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'Bad request - Cannot get changes for main branch',
+  })
+  @ApiResponse({ status: 404, description: 'Branch not found' })
+  async getBranchChanges(@Param('branchId') branchId: string) {
+    return await this.gisService.getBranchChanges(branchId);
+  }
+
   @Post(':branchId/features')
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({ summary: 'Add a new feature to a branch' })

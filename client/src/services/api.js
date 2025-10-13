@@ -84,6 +84,10 @@ export default {
     return api.get(`/branches/${branchId}/check-updates`);
   },
 
+  getBranchChanges(branchId) {
+    return api.get(`/branches/${branchId}/changes`)
+  },
+
   addFeature(branchId, featureData) {
     return api.post(`/branches/${branchId}/features`, featureData);
   },

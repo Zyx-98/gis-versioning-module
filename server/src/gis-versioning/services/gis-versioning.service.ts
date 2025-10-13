@@ -193,7 +193,8 @@ export class GISVersioningService {
           properties: feature.properties,
           status: FeatureStatus.ACTIVE,
           version: feature.version,
-          parentFeatureId: feature.id, // Track the original feature
+          parentFeatureId: feature.id,
+          parentVersion: feature.version,
           createdById: userId,
         });
         await queryRunner.manager.save(branchFeature);
@@ -270,7 +271,6 @@ export class GISVersioningService {
       throw new BadRequestException('Cannot modify inactive branch');
     }
 
-    // Validate geometry (basic check)
     this.validateGeometry(createFeatureDto.geometry);
 
     const feature = this.featureRepo.create({
@@ -280,7 +280,7 @@ export class GISVersioningService {
       properties: createFeatureDto.properties || {},
       status: FeatureStatus.ACTIVE,
       version: 1,
-      parentFeatureId: null, // New feature, no parent
+      parentFeatureId: null,
       createdById: userId,
     });
 
@@ -488,18 +488,15 @@ export class GISVersioningService {
   ): Promise<any[]> {
     const conflicts: any[] = [];
 
-    // Get features from source branch
     const sourceFeatures = await this.featureRepo.find({
       where: { branchId: sourceBranchId },
     });
 
     for (const sourceFeature of sourceFeatures) {
       if (!sourceFeature.parentFeatureId) {
-        // New feature, no conflict possible
         continue;
       }
 
-      // Find corresponding feature in target (main) branch
       const targetFeature = await this.featureRepo.findOne({
         where: {
           id: sourceFeature.parentFeatureId,
@@ -508,7 +505,6 @@ export class GISVersioningService {
       });
 
       if (!targetFeature) {
-        // Parent was deleted in main branch
         conflicts.push({
           featureId: sourceFeature.id,
           parentFeatureId: sourceFeature.parentFeatureId,
@@ -518,22 +514,41 @@ export class GISVersioningService {
         continue;
       }
 
-      // Check if target has been updated after source was created
-      if (
-        targetFeature.version > sourceFeature.version ||
-        targetFeature.updatedAt > sourceFeature.updatedAt
-      ) {
+      if (sourceFeature.status === FeatureStatus.DELETED) {
+        if (targetFeature.version > (sourceFeature.parentVersion || 0)) {
+          conflicts.push({
+            featureId: sourceFeature.id,
+            parentFeatureId: sourceFeature.parentFeatureId,
+            reason:
+              'Feature was modified in main branch but deleted in working branch',
+            type: 'delete_modified_conflict',
+            sourceVersion: sourceFeature.version,
+            targetVersion: targetFeature.version,
+            branchVersion: sourceFeature.parentVersion,
+          });
+        }
+        continue;
+      }
+
+      const wasModifiedInBranch =
+        sourceFeature.version > (sourceFeature.parentVersion || 0);
+      const wasModifiedInMain =
+        targetFeature.version > (sourceFeature.parentVersion || 0);
+
+      if (wasModifiedInBranch && wasModifiedInMain) {
         conflicts.push({
           featureId: sourceFeature.id,
           parentFeatureId: sourceFeature.parentFeatureId,
-          reason: 'Feature has been updated in main branch',
-          type: 'modified_in_target',
+          reason: 'Feature was modified in both main branch and working branch',
+          type: 'concurrent_modification',
           sourceVersion: sourceFeature.version,
           targetVersion: targetFeature.version,
+          branchVersion: sourceFeature.parentVersion, // Version when branched
         });
       }
     }
 
+    this.logger.log(`Detected ${conflicts.length} conflicts`);
     return conflicts;
   }
 
@@ -616,13 +631,100 @@ export class GISVersioningService {
     }
   }
 
+  async getBranchChanges(branchId: string): Promise<{
+    hasChanges: boolean;
+    changeCount: number;
+    changes: Array<{
+      feature: Feature;
+      changeType: 'add' | 'modify' | 'delete';
+      parentFeature?: Feature;
+    }>;
+  }> {
+    const branch = await this.branchRepo.findOne({
+      where: { id: branchId },
+    });
+
+    if (!branch || branch.isMain) {
+      throw new BadRequestException('Invalid branch');
+    }
+
+    if (!branch.branchedFrom) {
+      throw new BadRequestException('Branch has no parent');
+    }
+
+    const changes: Array<{
+      feature: Feature;
+      changeType: 'add' | 'modify' | 'delete';
+      parentFeature?: Feature;
+    }> = [];
+
+    // Get all features in the working branch
+    const branchFeatures = await this.featureRepo.find({
+      where: { branchId: branch.id },
+    });
+
+    for (const branchFeature of branchFeatures) {
+      if (!branchFeature.parentFeatureId) {
+        changes.push({
+          feature: branchFeature,
+          changeType: 'add',
+        });
+        continue;
+      }
+
+      const parentFeature = await this.featureRepo.findOne({
+        where: {
+          id: branchFeature.parentFeatureId,
+          branchId: branch.branchedFrom,
+        },
+      });
+
+      if (!parentFeature) {
+        this.logger.warn(
+          `Parent feature not found: ${branchFeature.parentFeatureId}`,
+        );
+        continue;
+      }
+
+      // Check if deleted
+      if (branchFeature.status === FeatureStatus.DELETED) {
+        changes.push({
+          feature: branchFeature,
+          changeType: 'delete',
+          parentFeature,
+        });
+        continue;
+      }
+
+      // Check if modified (version increased from parent)
+      if (branchFeature.version > (branchFeature.parentVersion || 0)) {
+        changes.push({
+          feature: branchFeature,
+          changeType: 'modify',
+          parentFeature,
+        });
+      }
+    }
+
+    return {
+      hasChanges: changes.length > 0,
+      changeCount: changes.length,
+      changes,
+    };
+  }
+
   /**
    * Check for updates in main branch (like git fetch)
    */
   async checkForUpdates(branchId: string): Promise<{
     hasUpdates: boolean;
     updatedCount: number;
-    updates: Feature[];
+    updates: Array<{
+      feature: Feature;
+      updateType: 'added_in_main' | 'modified_in_main' | 'deleted_in_main';
+      branchVersion?: number;
+      mainVersion?: number;
+    }>;
   }> {
     const branch = await this.branchRepo.findOne({
       where: { id: branchId },
@@ -640,21 +742,76 @@ export class GISVersioningService {
       throw new NotFoundException('Main branch not found');
     }
 
-    // Get features that changed in main after branch creation
-    const updatedFeatures = await this.featureRepo
-      .createQueryBuilder('feature')
-      .where('feature.branchId = :mainBranchId', {
-        mainBranchId: mainBranch.id,
-      })
-      .andWhere('feature.updatedAt > :branchCreatedAt', {
-        branchCreatedAt: branch.createdAt,
-      })
-      .getMany();
+    const updates: Array<{
+      feature: Feature;
+      updateType: 'added_in_main' | 'modified_in_main' | 'deleted_in_main';
+      branchVersion?: number;
+      mainVersion?: number;
+    }> = [];
+
+    const branchFeatures = await this.featureRepo.find({
+      where: { branchId: branch.id },
+    });
+
+    const branchFeatureMap = new Map<string, Feature>();
+    branchFeatures.forEach((f) => {
+      if (f.parentFeatureId) {
+        branchFeatureMap.set(f.parentFeatureId, f);
+      }
+    });
+
+    const mainFeatures = await this.featureRepo.find({
+      where: {
+        branchId: mainBranch.id,
+        status: FeatureStatus.ACTIVE,
+      },
+    });
+
+    for (const mainFeature of mainFeatures) {
+      if (mainFeature.createdAt > branch.createdAt) {
+        updates.push({
+          feature: mainFeature,
+          updateType: 'added_in_main',
+        });
+        continue;
+      }
+
+      const branchFeature = branchFeatureMap.get(mainFeature.id);
+
+      if (branchFeature) {
+        if (mainFeature.version > (branchFeature.parentVersion || 0)) {
+          updates.push({
+            feature: mainFeature,
+            updateType: 'modified_in_main',
+            branchVersion: branchFeature.version,
+            mainVersion: mainFeature.version,
+          });
+        }
+      }
+    }
+
+    for (const branchFeature of branchFeatures) {
+      if (!branchFeature.parentFeatureId) continue;
+
+      const mainFeature = await this.featureRepo.findOne({
+        where: {
+          id: branchFeature.parentFeatureId,
+          branchId: mainBranch.id,
+        },
+      });
+
+      if (!mainFeature || mainFeature.status === FeatureStatus.DELETED) {
+        updates.push({
+          feature: branchFeature,
+          updateType: 'deleted_in_main',
+        });
+      }
+    }
 
     return {
-      hasUpdates: updatedFeatures.length > 0,
-      updatedCount: updatedFeatures.length,
-      updates: updatedFeatures,
+      hasUpdates: updates.length > 0,
+      updatedCount: updates.length,
+      updates,
     };
   }
 
@@ -713,7 +870,6 @@ export class GISVersioningService {
         }
 
         if (change.changeType === ChangeType.ADD) {
-          // Add new feature to main
           const newFeature = this.featureRepo.create({
             datasetId: sourceFeature.datasetId,
             branchId: mergeRequest.targetBranchId,
@@ -726,7 +882,6 @@ export class GISVersioningService {
           });
           await queryRunner.manager.save(newFeature);
         } else if (change.changeType === ChangeType.MODIFY) {
-          // Update existing feature in main
           const targetFeature = await queryRunner.manager.findOne(Feature, {
             where: { id: sourceFeature.parentFeatureId },
           });
@@ -902,8 +1057,5 @@ export class GISVersioningService {
     if (!validTypes.includes(geometry.type)) {
       throw new BadRequestException(`Invalid geometry type: ${geometry.type}`);
     }
-
-    // Additional validation can be added here
-    // For example, check coordinate format, polygon closure, etc.
   }
 }
