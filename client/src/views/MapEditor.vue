@@ -86,6 +86,33 @@
                 />
               </svg>
             </button>
+            
+            <!-- Edit Mode Button -->
+            <button
+              @click="toggleEditMode"
+              :class="[
+                'p-2 rounded hover:bg-gray-100',
+                editMode
+                  ? 'bg-green-100 text-green-700'
+                  : 'text-gray-700',
+              ]"
+              title="Edit Mode (Move/Reshape)"
+            >
+              <svg
+                class="w-5 h-5"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="2"
+                  d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"
+                />
+              </svg>
+            </button>
+
             <button
               @click="setDrawMode('point')"
               :class="[
@@ -165,10 +192,10 @@
               </svg>
             </button>
             <button
-              v-if="drawMode !== 'select'"
+              v-if="drawMode !== 'select' || editMode"
               @click="cancelDrawing"
               class="p-2 rounded hover:bg-gray-100 text-red-600"
-              title="Cancel Drawing"
+              title="Cancel Drawing/Editing"
             >
               <svg
                 class="w-5 h-5"
@@ -202,6 +229,31 @@
           >
             Create MR
           </button>
+        </div>
+      </div>
+
+      <!-- Edit Mode Banner -->
+      <div
+        v-if="editMode"
+        class="px-4 py-2 bg-green-50 border-t border-green-200"
+      >
+        <div class="flex items-center gap-2 text-sm text-green-800">
+          <svg
+            class="w-5 h-5"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"
+            />
+          </svg>
+          <span class="font-medium">
+            Edit Mode Active: Click and drag features to move/reshape them. Click "Save Changes" when done.
+          </span>
         </div>
       </div>
 
@@ -616,6 +668,7 @@ const selectedLayer = ref(null);
 const features = ref([]);
 const hasUnsavedChanges = ref(false);
 const drawMode = ref("select");
+const editMode = ref(false);
 const showMergeRequestModal = ref(false);
 const showUpdatesModal = ref(false);
 const mergeRequestDescription = ref("");
@@ -653,7 +706,7 @@ const mainUpdatesCount = computed(() => {
 
 const initializeMap = () => {
   const rawMap = L.map(mapContainer.value, {
-    center: [21.0278, 105.8342], // Hanoi center
+    center: [21.0278, 105.8342],
     zoom: 12,
     zoomControl: true,
   });
@@ -682,24 +735,16 @@ const initializeMap = () => {
     },
     edit: {
       featureGroup: drawnItems.value,
-      remove: true,
-      edit: {
-        selectedPathOptions: {
-          maintainColor: true,
-          opacity: 0.6,
-          weight: 3,
-        },
-      },
+      remove: false,
     },
   });
 
   drawControl.value = markRaw(rawDrawControl);
-
   map.value.addControl(drawControl.value);
 
   map.value.on(L.Draw.Event.CREATED, handleFeatureCreated);
-  map.value.on(L.Draw.Event.EDITED, handleFeatureEdited);
-  map.value.on(L.Draw.Event.DELETED, handleFeatureDeleted);
+  map.value.on('draw:edited', handleFeatureEdited);
+  map.value.on('draw:deleted', handleFeatureDeleted);
 
   drawnItems.value.on("click", handleFeatureClick);
 };
@@ -716,6 +761,8 @@ const loadFeatures = async () => {
     features.value.forEach((feature) => {
       addFeatureToMap(feature);
     });
+    
+    console.log(`Loaded ${features.value.length} features`);
   } catch (error) {
     console.error("Failed to load features:", error);
   }
@@ -737,10 +784,9 @@ const addFeatureToMap = (feature) => {
 
     const rawLayer = markRaw(layer);
 
-    // Store feature data in layer
     rawLayer.feature = {
       type: "Feature",
-      properties: feature.properties || {},
+      properties: { ...feature.properties } || {},
       geometry: feature.geometry,
       id: feature.id,
     };
@@ -753,7 +799,69 @@ const addFeatureToMap = (feature) => {
   }
 };
 
+const toggleEditMode = () => {
+  const rawMap = toRaw(map.value);
+  const rawDrawnItems = toRaw(drawnItems.value);
+
+  if (!editMode.value) {
+    // Enable edit mode
+    editMode.value = true;
+    drawMode.value = "select";
+    
+    // Cancel any active drawing
+    if (rawMap._drawingHandler) {
+      try {
+        rawMap._drawingHandler.disable();
+        rawMap._drawingHandler = null;
+      } catch (e) {
+        console.error("Error canceling drawing:", e);
+      }
+    }
+    
+    // Enable editing on all layers
+    let enabledCount = 0;
+    rawDrawnItems.eachLayer((layer) => {
+      if (layer.editing) {
+        layer.editing.enable();
+        enabledCount++;
+      }
+    });
+    
+    console.log(`Edit mode enabled on ${enabledCount} layers`);
+  } else {
+    // Disable edit mode
+    editMode.value = false;
+    
+    let disabledCount = 0;
+    rawDrawnItems.eachLayer((layer) => {
+      if (layer.editing && layer.editing.enabled()) {
+        // Update geometry before disabling
+        if (layer.feature && layer.feature.id) {
+          const newGeometry = layer.toGeoJSON().geometry;
+          const oldGeometry = JSON.stringify(layer.feature.geometry);
+          const newGeometryStr = JSON.stringify(newGeometry);
+          
+          if (oldGeometry !== newGeometryStr) {
+            layer.feature.geometry = newGeometry;
+            hasUnsavedChanges.value = true;
+            console.log(`Feature ${layer.feature.id} was modified`);
+          }
+        }
+        layer.editing.disable();
+        disabledCount++;
+      }
+    });
+    
+    console.log(`Edit mode disabled on ${disabledCount} layers`);
+  }
+};
+
 const setDrawMode = (mode) => {
+  // Disable edit mode if active
+  if (editMode.value) {
+    toggleEditMode();
+  }
+
   drawMode.value = mode;
 
   const rawMap = toRaw(map.value);
@@ -762,7 +870,7 @@ const setDrawMode = (mode) => {
     try {
       rawMap._drawingHandler.disable();
     } catch (e) {
-      console.log("🚀 ~ setDrawMode ~ e:", e);
+      console.log("Error disabling drawing handler:", e);
     }
   }
 
@@ -778,7 +886,6 @@ const setDrawMode = (mode) => {
     });
 
     rawMap._drawingHandler = markRaw(markerDrawer);
-
     markerDrawer.enable();
   } else if (mode === "line") {
     const polylineDrawer = new L.Draw.Polyline(rawMap, {
@@ -827,6 +934,12 @@ const cancelDrawing = () => {
       console.error("Error canceling drawing:", e);
     }
   }
+  
+  // Also disable edit mode if active
+  if (editMode.value) {
+    toggleEditMode();
+  }
+  
   drawMode.value = "select";
 };
 
@@ -853,27 +966,38 @@ const handleFeatureCreated = (e) => {
   rawDrawnItems.addLayer(rawLayer);
   mapFeatures.value.set(tempId, rawLayer);
 
+  console.log(`Created new feature: ${tempId}`);
   drawMode.value = "select";
 };
 
 const handleFeatureEdited = (e) => {
   hasUnsavedChanges.value = true;
 
+  let editedCount = 0;
   e.layers.eachLayer((layer) => {
     if (layer.feature && layer.feature.id) {
       layer.feature.geometry = layer.toGeoJSON().geometry;
+      editedCount++;
+      console.log(`Edited feature: ${layer.feature.id}`);
     }
   });
+  
+  console.log(`Total edited features: ${editedCount}`);
 };
 
 const handleFeatureDeleted = (e) => {
   hasUnsavedChanges.value = true;
 
+  let deletedCount = 0;
   e.layers.eachLayer((layer) => {
     if (layer.feature && layer.feature.id) {
       mapFeatures.value.delete(layer.feature.id);
+      deletedCount++;
+      console.log(`Deleted feature: ${layer.feature.id}`);
     }
   });
+
+  console.log(`Total deleted features: ${deletedCount}`);
 
   const rawDrawnItems = toRaw(drawnItems.value);
   const rawSelectedLayer = toRaw(selectedLayer.value);
@@ -960,17 +1084,14 @@ const prepareCreateMergeRequest = async () => {
   showMergeRequestModal.value = true;
 
   try {
-    // Fetch branch changes
     branchChanges.value = await datasetStore.fetchBranchChanges(
       route.params.branchId
     );
 
-    // Check for main updates
     mainUpdates.value = await datasetStore.checkForMainUpdates(
       route.params.branchId
     );
 
-    // Auto-fill description
     if (branchChanges.value.hasChanges) {
       const summary = `${branchChangesInfo.value.added} added, ${branchChangesInfo.value.modified} modified, ${branchChangesInfo.value.deleted} deleted`;
       mergeRequestDescription.value = `Changes summary: ${summary}`;
@@ -991,37 +1112,40 @@ const closeMergeRequestModal = () => {
 };
 
 const saveChanges = async () => {
+  // Disable edit mode first if active
+  if (editMode.value) {
+    toggleEditMode();
+  }
+
   try {
-    // CRITICAL FIX: Use toRaw when iterating over layers
     const rawDrawnItems = toRaw(drawnItems.value);
 
-    // Get all layers from the map
+    // Collect all current layers with their data
     const allLayers = [];
     rawDrawnItems.eachLayer((layer) => {
       if (layer.feature && layer.feature.id) {
         allLayers.push({
           id: layer.feature.id,
           geometry: layer.toGeoJSON().geometry,
-          properties: layer.feature.properties,
+          properties: { ...layer.feature.properties },
         });
       }
     });
 
-    // Get current feature IDs on map
+    console.log(`Total layers on map: ${allLayers.length}`);
+    console.log(`Features in store: ${features.value.length}`);
+
     const currentFeatureIds = new Set(allLayers.map((f) => f.id));
 
-    // Track which features have actually changed
     const featuresToAdd = [];
     const featuresToUpdate = [];
     const featuresToDelete = [];
 
-    // Process each layer
+    // Check for new and modified features
     for (const layer of allLayers) {
-      // Check if it's a new feature (temp ID)
       if (layer.id.startsWith("temp_")) {
         featuresToAdd.push(layer);
       } else {
-        // Existing feature - check if it actually changed
         const existingFeature = features.value.find((f) => f.id === layer.id);
 
         if (existingFeature) {
@@ -1046,9 +1170,13 @@ const saveChanges = async () => {
       }
     }
 
-    // Calculate total changes
     const totalChanges =
       featuresToAdd.length + featuresToUpdate.length + featuresToDelete.length;
+
+    console.log(`Changes to save: ${totalChanges}`);
+    console.log(`- New: ${featuresToAdd.length}`);
+    console.log(`- Modified: ${featuresToUpdate.length}`);
+    console.log(`- Deleted: ${featuresToDelete.length}`);
 
     if (totalChanges === 0) {
       alert("No changes to save");
@@ -1075,10 +1203,11 @@ const saveChanges = async () => {
 
       // Update the layer with real ID from server
       const layer = mapFeatures.value.get(feature.id);
-      if (layer && response.data) {
+      if (layer && response.id) {
         mapFeatures.value.delete(feature.id);
-        layer.feature.id = response.data.id;
-        mapFeatures.value.set(response.data.id, layer);
+        layer.feature.id = response.id;
+        mapFeatures.value.set(response.id, layer);
+        console.log(`Updated temp ID ${feature.id} to ${response.id}`);
       }
     }
 
@@ -1097,6 +1226,8 @@ const saveChanges = async () => {
 
     hasUnsavedChanges.value = false;
     alert(`Successfully saved ${totalChanges} change(s)!`);
+    
+    // Reload features from server to sync state
     await loadFeatures();
 
     // Refresh branch changes info
@@ -1146,7 +1277,6 @@ const createMergeRequest = async () => {
 };
 
 onMounted(async () => {
-  // Load dataset and branch info
   await datasetStore.fetchDataset(route.params.datasetId);
   await datasetStore.fetchBranches(route.params.datasetId);
   const branch = datasetStore.branches.find(
