@@ -177,4 +177,8 @@ export default {
   checkBranchHasActiveMergeRequest(branchId) {
     return api.get(`/branches/${branchId}/has-active-merge-request`);
   },
+
+  canEditBranch(branchId) {
+    return api.get(`/branches/${branchId}/can-edit`);
+  },
 };
