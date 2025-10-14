@@ -676,6 +676,8 @@ const mainUpdates = ref(null);
 const loadingChanges = ref(false);
 const creatingMR = ref(false);
 const mapFeatures = ref(new Map());
+const hasActiveMR = ref(false);
+const checkingActiveMR = ref(false);
 
 const currentDataset = computed(() => datasetStore.currentDataset);
 const currentBranch = computed(() => datasetStore.currentBranch);
@@ -701,6 +703,10 @@ const mainHasUpdates = computed(() => {
 
 const mainUpdatesCount = computed(() => {
   return mainUpdates.value?.updatedCount || 0;
+});
+
+const canCreateMR = computed(() => {
+  return !currentBranch.value?.isMain && !hasActiveMR.value;
 });
 
 const initializeMap = () => {
@@ -1079,6 +1085,15 @@ const prepareCreateMergeRequest = async () => {
     return;
   }
 
+  await checkActiveMergeRequest();
+
+  if (hasActiveMR.value) {
+    alert(
+      "This branch already has an active merge request. Please complete or cancel the existing merge request before creating a new one."
+    );
+    return;
+  }
+
   loadingChanges.value = true;
   showMergeRequestModal.value = true;
 
@@ -1111,7 +1126,6 @@ const closeMergeRequestModal = () => {
 };
 
 const saveChanges = async () => {
-  // Disable edit mode first if active
   if (editMode.value) {
     toggleEditMode();
   }
@@ -1119,7 +1133,6 @@ const saveChanges = async () => {
   try {
     const rawDrawnItems = toRaw(drawnItems.value);
 
-    // Collect all current layers with their data
     const allLayers = [];
     rawDrawnItems.eachLayer((layer) => {
       if (layer.feature && layer.feature.id) {
@@ -1140,7 +1153,6 @@ const saveChanges = async () => {
     const featuresToUpdate = [];
     const featuresToDelete = [];
 
-    // Check for new and modified features
     for (const layer of allLayers) {
       if (layer.id.startsWith("temp_")) {
         featuresToAdd.push(layer);
@@ -1162,7 +1174,6 @@ const saveChanges = async () => {
       }
     }
 
-    // Check for deleted features
     for (const feature of features.value) {
       if (!currentFeatureIds.has(feature.id) && feature.status === "active") {
         featuresToDelete.push(feature);
@@ -1193,14 +1204,12 @@ const saveChanges = async () => {
       return;
     }
 
-    // Save new features
     for (const feature of featuresToAdd) {
       const response = await datasetStore.addFeature(route.params.branchId, {
         geometry: feature.geometry,
         properties: feature.properties,
       });
 
-      // Update the layer with real ID from server
       const layer = mapFeatures.value.get(feature.id);
       if (layer && response.id) {
         mapFeatures.value.delete(feature.id);
@@ -1210,7 +1219,6 @@ const saveChanges = async () => {
       }
     }
 
-    // Update modified features
     for (const feature of featuresToUpdate) {
       await datasetStore.updateFeature(route.params.branchId, feature.id, {
         geometry: feature.geometry,
@@ -1218,7 +1226,6 @@ const saveChanges = async () => {
       });
     }
 
-    // Delete removed features
     for (const feature of featuresToDelete) {
       await datasetStore.deleteFeature(route.params.branchId, feature.id);
     }
@@ -1226,10 +1233,8 @@ const saveChanges = async () => {
     hasUnsavedChanges.value = false;
     alert(`Successfully saved ${totalChanges} change(s)!`);
 
-    // Reload features from server to sync state
     await loadFeatures();
 
-    // Refresh branch changes info
     if (!currentBranch.value?.isMain) {
       try {
         branchChanges.value = await datasetStore.fetchBranchChanges(
@@ -1279,6 +1284,22 @@ const createMergeRequest = async () => {
   }
 };
 
+const checkActiveMergeRequest = async () => {
+  if (currentBranch.value?.isMain) return;
+
+  try {
+    checkingActiveMR.value = true;
+    const response = await api.checkBranchHasActiveMergeRequest(
+      route.params.branchId
+    );
+    hasActiveMR.value = response.data.hasActiveMergeRequest;
+  } catch (error) {
+    console.error("Failed to check for active merge request:", error);
+  } finally {
+    checkingActiveMR.value = false;
+  }
+};
+
 onMounted(async () => {
   await datasetStore.fetchDataset(route.params.datasetId);
   await datasetStore.fetchBranches(route.params.datasetId);
@@ -1294,6 +1315,9 @@ onMounted(async () => {
 
     if (!currentBranch.value?.isMain) {
       try {
+        // Check for active merge request
+        await checkActiveMergeRequest();
+
         mainUpdates.value = await datasetStore.checkForMainUpdates(
           route.params.branchId
         );

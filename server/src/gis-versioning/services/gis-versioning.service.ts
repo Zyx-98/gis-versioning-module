@@ -434,6 +434,25 @@ export class GISVersioningService {
       );
     }
 
+    // Check if there's already an active merge request for this branch
+    const existingMergeRequest = await this.mergeRequestRepo.findOne({
+      where: {
+        sourceBranchId,
+        status: In([
+          MergeRequestStatus.DRAFT,
+          MergeRequestStatus.REVIEWING,
+          MergeRequestStatus.PENDING,
+          MergeRequestStatus.CONFLICT,
+        ]),
+      },
+    });
+
+    if (existingMergeRequest) {
+      throw new BadRequestException(
+        'This branch already has an active merge request. Please complete or cancel the existing merge request before creating a new one.',
+      );
+    }
+
     const targetBranch = await this.branchRepo.findOne({
       where: { id: sourceBranch.branchedFrom, isMain: true },
     });
@@ -465,6 +484,22 @@ export class GISVersioningService {
       where: { id: savedMR.id },
       relations: ['sourceBranch', 'targetBranch', 'createdBy', 'changes'],
     });
+  }
+
+  async hasActiveMergeRequest(branchId: string): Promise<boolean> {
+    const count = await this.mergeRequestRepo.count({
+      where: {
+        sourceBranchId: branchId,
+        status: In([
+          MergeRequestStatus.DRAFT,
+          MergeRequestStatus.REVIEWING,
+          MergeRequestStatus.PENDING,
+          MergeRequestStatus.CONFLICT,
+        ]),
+      },
+    });
+
+    return count > 0;
   }
 
   /**

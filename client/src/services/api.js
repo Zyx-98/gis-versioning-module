@@ -173,4 +173,8 @@ export default {
       params: { sourceId, targetId },
     });
   },
+
+  checkBranchHasActiveMergeRequest(branchId) {
+    return api.get(`/branches/${branchId}/has-active-merge-request`);
+  },
 };
