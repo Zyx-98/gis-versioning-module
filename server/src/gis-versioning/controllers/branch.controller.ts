@@ -56,6 +56,25 @@ export class BranchController {
     return await this.gisService.getBranchById(branchId);
   }
 
+  @Delete(':branchId')
+  @ApiOperation({
+    summary: 'Delete a branch (only creator can delete their own branch)',
+  })
+  @ApiResponse({ status: 200, description: 'Branch deleted successfully' })
+  @ApiResponse({
+    status: 403,
+    description: 'Forbidden - Only creator can delete their branch',
+  })
+  @ApiResponse({
+    status: 400,
+    description:
+      'Bad request - Cannot delete main branch or branch with active merge requests',
+  })
+  @ApiResponse({ status: 404, description: 'Branch not found' })
+  async deleteBranch(@Request() req, @Param('branchId') branchId: string) {
+    return await this.gisService.deleteBranch(req.user.id, branchId);
+  }
+
   @Get(':branchId/features')
   @ApiOperation({ summary: 'Get all features in a branch' })
   @ApiQuery({

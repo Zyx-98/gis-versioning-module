@@ -7,6 +7,7 @@ export enum BranchStatus {
   ACTIVE = 'active',
   MERGED = 'merged',
   REJECTED = 'rejected',
+  DELETED = 'deleted',
 }
 
 export enum FeatureStatus {
@@ -15,10 +16,13 @@ export enum FeatureStatus {
 }
 
 export enum MergeRequestStatus {
+  DRAFT = 'draft',
+  REVIEWING = 'reviewing',
   PENDING = 'pending',
   APPROVED = 'approved',
   REJECTED = 'rejected',
   CONFLICT = 'conflict',
+  CANCELLED = 'cancelled',
 }
 
 export enum ChangeType {

@@ -50,18 +50,15 @@ export class ConflictResolutionService {
     }
 
     if (resolution === 'keep_source') {
-      // Keep the source branch version (user's changes)
       change.conflictData = null;
       change.hasConflict = false;
       this.logger.log('Conflict resolved: keeping source version');
     } else if (resolution === 'keep_target') {
-      // Keep the target branch version (main branch)
       change.afterData = change.beforeData;
       change.conflictData = null;
       change.hasConflict = false;
       this.logger.log('Conflict resolved: keeping target version');
     } else if (resolution === 'manual' && manualData) {
-      // User manually resolved the conflict
       change.afterData = manualData;
       change.conflictData = null;
       change.hasConflict = false;
@@ -74,7 +71,6 @@ export class ConflictResolutionService {
 
     await this.featureChangeRepo.save(change);
 
-    // Check if all conflicts in merge request are resolved
     await this.checkAndUpdateMergeRequestStatus(change.mergeRequestId);
 
     return change;
@@ -94,7 +90,6 @@ export class ConflictResolutionService {
     });
 
     if (remainingConflicts === 0) {
-      // All conflicts resolved, update merge request status to pending
       const mergeRequest = await this.mergeRequestRepo.findOne({
         where: { id: mergeRequestId },
       });
@@ -207,11 +202,9 @@ export class ConflictResolutionService {
 
     for (const change of changes) {
       if (strategy === 'keep_source') {
-        // Keep source branch changes
         change.hasConflict = false;
         change.conflictData = null;
       } else {
-        // Keep target branch changes
         change.afterData = change.beforeData;
         change.hasConflict = false;
         change.conflictData = null;
@@ -221,7 +214,6 @@ export class ConflictResolutionService {
       resolvedCount++;
     }
 
-    // Update merge request status
     await this.checkAndUpdateMergeRequestStatus(mergeRequestId);
 
     this.logger.log(`Auto-resolved ${resolvedCount} conflicts`);

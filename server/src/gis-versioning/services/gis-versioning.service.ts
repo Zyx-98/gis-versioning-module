@@ -6,13 +6,14 @@ import {
   Logger,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, DataSource } from 'typeorm';
+import { Repository, DataSource, In } from 'typeorm';
 import {
   CreateDatasetDto,
   CheckoutBranchDto,
   CreateFeatureDto,
   UpdateFeatureDto,
   CreateMergeRequestDto,
+  UpdateMergeRequestDto,
 } from '../dto';
 import { Dataset } from 'src/database/entities/dataset.entity';
 import { Branch } from 'src/database/entities/branch.entity';
@@ -441,42 +442,365 @@ export class GISVersioningService {
       throw new NotFoundException('Target main branch not found');
     }
 
-    // Detect conflicts
-    const conflicts = await this.detectConflicts(
-      sourceBranchId,
-      targetBranch.id,
-    );
-
     const mergeRequest = this.mergeRequestRepo.create({
       sourceBranchId: sourceBranch.id,
       targetBranchId: targetBranch.id,
       description,
-      status:
-        conflicts.length > 0
-          ? MergeRequestStatus.CONFLICT
-          : MergeRequestStatus.PENDING,
+      status: MergeRequestStatus.DRAFT,
       createdById: userId,
-      conflicts: conflicts.length > 0 ? conflicts : [],
+      conflicts: [],
     });
 
     const savedMR = await this.mergeRequestRepo.save(mergeRequest);
 
-    // Track all changes
-    await this.trackChanges(
+    await this.trackChangesForDraft(
       savedMR.id,
       sourceBranchId,
       targetBranch.id,
-      conflicts,
     );
 
-    this.logger.log(
-      `Merge request created: ${savedMR.id}, conflicts: ${conflicts.length}`,
-    );
+    this.logger.log(`Merge request created as draft: ${savedMR.id}`);
 
     return await this.mergeRequestRepo.findOneOrFail({
       where: { id: savedMR.id },
       relations: ['sourceBranch', 'targetBranch', 'createdBy', 'changes'],
     });
+  }
+
+  /**
+   * Track changes for draft merge request (without conflict detection)
+   */
+  private async trackChangesForDraft(
+    mergeRequestId: string,
+    sourceBranchId: string,
+    targetBranchId: string,
+  ): Promise<void> {
+    const sourceFeatures = await this.featureRepo.find({
+      where: { branchId: sourceBranchId },
+    });
+
+    const targetFeaturesMap = new Map<string, Feature>();
+    const targetFeatures = await this.featureRepo.find({
+      where: { branchId: targetBranchId },
+    });
+    targetFeatures.forEach((f) => targetFeaturesMap.set(f.id, f));
+
+    for (const sourceFeature of sourceFeatures) {
+      let changeType: ChangeType | null = null;
+      let beforeData: any = null;
+      let targetFeature: Feature | undefined;
+
+      if (!sourceFeature.parentFeatureId) {
+        changeType = ChangeType.ADD;
+        beforeData = null;
+      } else {
+        targetFeature = targetFeaturesMap.get(sourceFeature.parentFeatureId);
+
+        if (!targetFeature) {
+          this.logger.warn(
+            `Parent feature ${sourceFeature.parentFeatureId} not found in target branch`,
+          );
+          continue;
+        }
+
+        if (sourceFeature.status === FeatureStatus.DELETED) {
+          changeType = ChangeType.DELETE;
+          beforeData = {
+            geometry: targetFeature.geometry,
+            properties: targetFeature.properties,
+            version: targetFeature.version,
+            status: targetFeature.status,
+          };
+        } else if (sourceFeature.version > (sourceFeature.parentVersion || 0)) {
+          changeType = ChangeType.MODIFY;
+          beforeData = {
+            geometry: targetFeature.geometry,
+            properties: targetFeature.properties,
+            version: targetFeature.version,
+            status: targetFeature.status,
+          };
+        }
+      }
+
+      if (changeType !== null) {
+        const featureChange = this.featureChangeRepo.create({
+          mergeRequestId,
+          featureId: sourceFeature.id,
+          changeType,
+          beforeData,
+          afterData: {
+            geometry: sourceFeature.geometry,
+            properties: sourceFeature.properties,
+            version: sourceFeature.version,
+            status: sourceFeature.status,
+          },
+          hasConflict: false, // No conflict detection for draft
+          conflictData: null,
+        });
+
+        await this.featureChangeRepo.save(featureChange);
+      }
+    }
+
+    this.logger.log(
+      `Tracked changes for draft merge request ${mergeRequestId}`,
+    );
+  }
+
+  async deleteBranch(userId: string, branchId: string): Promise<Branch> {
+    this.logger.log(`User ${userId} deleting branch: ${branchId}`);
+
+    const branch = await this.branchRepo.findOne({
+      where: { id: branchId },
+      relations: ['createdBy'],
+    });
+
+    if (!branch) {
+      throw new NotFoundException('Branch not found');
+    }
+
+    if (branch.createdById !== userId) {
+      throw new ForbiddenException('Only the creator can delete this branch');
+    }
+
+    if (branch.isMain) {
+      throw new BadRequestException('Cannot delete main branch');
+    }
+
+    if (branch.status === BranchStatus.DELETED) {
+      throw new BadRequestException('Branch already deleted');
+    }
+
+    const activeMergeRequests = await this.mergeRequestRepo.count({
+      where: {
+        sourceBranchId: branchId,
+        status: In([
+          MergeRequestStatus.DRAFT,
+          MergeRequestStatus.REVIEWING,
+          MergeRequestStatus.PENDING,
+          MergeRequestStatus.CONFLICT,
+        ]),
+      },
+    });
+
+    if (activeMergeRequests > 0) {
+      throw new BadRequestException(
+        'Cannot delete branch with active merge requests. Cancel the merge requests first.',
+      );
+    }
+
+    branch.status = BranchStatus.DELETED;
+    const savedBranch = await this.branchRepo.save(branch);
+
+    this.logger.log(`Branch deleted: ${branchId}`);
+    return savedBranch;
+  }
+
+  /**
+   * Update merge request description (only creator can update)
+   */
+  async updateMergeRequest(
+    userId: string,
+    mergeRequestId: string,
+    updateMergeRequestDto: UpdateMergeRequestDto,
+  ): Promise<MergeRequest> {
+    this.logger.log(`User ${userId} updating merge request: ${mergeRequestId}`);
+
+    const mergeRequest = await this.mergeRequestRepo.findOne({
+      where: { id: mergeRequestId },
+      relations: ['sourceBranch', 'targetBranch', 'createdBy'],
+    });
+
+    if (!mergeRequest) {
+      throw new NotFoundException('Merge request not found');
+    }
+
+    if (mergeRequest.createdById !== userId) {
+      throw new ForbiddenException(
+        'Only the creator can update this merge request',
+      );
+    }
+
+    if (
+      ![
+        MergeRequestStatus.DRAFT,
+        MergeRequestStatus.REVIEWING,
+        MergeRequestStatus.CONFLICT,
+      ].includes(mergeRequest.status)
+    ) {
+      throw new BadRequestException(
+        'Can only update draft, reviewing, or conflict merge requests',
+      );
+    }
+
+    if (updateMergeRequestDto.description !== undefined) {
+      mergeRequest.description = updateMergeRequestDto.description;
+    }
+
+    const savedMR = await this.mergeRequestRepo.save(mergeRequest);
+
+    this.logger.log(`Merge request updated: ${mergeRequestId}`);
+    return await this.mergeRequestRepo.findOneOrFail({
+      where: { id: savedMR.id },
+      relations: ['sourceBranch', 'targetBranch', 'createdBy'],
+    });
+  }
+
+  /**
+   * Submit merge request for admin review (member action)
+   */
+  async submitMergeRequestForReview(
+    userId: string,
+    mergeRequestId: string,
+  ): Promise<MergeRequest> {
+    this.logger.log(
+      `User ${userId} submitting merge request for review: ${mergeRequestId}`,
+    );
+
+    const mergeRequest = await this.mergeRequestRepo.findOne({
+      where: { id: mergeRequestId },
+      relations: ['sourceBranch', 'targetBranch', 'createdBy', 'changes'],
+    });
+
+    if (!mergeRequest) {
+      throw new NotFoundException('Merge request not found');
+    }
+
+    if (mergeRequest.createdById !== userId) {
+      throw new ForbiddenException(
+        'Only the creator can submit this merge request for review',
+      );
+    }
+
+    if (mergeRequest.status === MergeRequestStatus.DRAFT) {
+      // Check if there are any changes
+      if (!mergeRequest.changes || mergeRequest.changes.length === 0) {
+        throw new BadRequestException(
+          'Cannot submit merge request with no changes',
+        );
+      }
+
+      const conflicts = await this.detectConflicts(
+        mergeRequest.sourceBranchId,
+        mergeRequest.targetBranchId,
+      );
+
+      if (conflicts.length > 0) {
+        mergeRequest.status = MergeRequestStatus.CONFLICT;
+        mergeRequest.conflicts = conflicts;
+        await this.mergeRequestRepo.save(mergeRequest);
+
+        await this.updateConflictsInChanges(mergeRequest.id, conflicts);
+
+        throw new BadRequestException(
+          `Cannot submit merge request with ${conflicts.length} unresolved conflicts. Please resolve them first.`,
+        );
+      }
+
+      mergeRequest.status = MergeRequestStatus.REVIEWING;
+    } else if (mergeRequest.status === MergeRequestStatus.CONFLICT) {
+      const unresolvedConflicts = await this.featureChangeRepo.count({
+        where: {
+          mergeRequestId: mergeRequest.id,
+          hasConflict: true,
+        },
+      });
+
+      if (unresolvedConflicts > 0) {
+        throw new BadRequestException(
+          `Cannot submit merge request with ${unresolvedConflicts} unresolved conflicts`,
+        );
+      }
+
+      mergeRequest.status = MergeRequestStatus.REVIEWING;
+      mergeRequest.conflicts = [];
+    } else {
+      throw new BadRequestException(
+        'Can only submit draft or resolved conflict merge requests for review',
+      );
+    }
+
+    const savedMR = await this.mergeRequestRepo.save(mergeRequest);
+
+    this.logger.log(`Merge request submitted for review: ${mergeRequestId}`);
+    return await this.mergeRequestRepo.findOneOrFail({
+      where: { id: savedMR.id },
+      relations: ['sourceBranch', 'targetBranch', 'createdBy'],
+    });
+  }
+
+  /**
+   * Cancel a merge request (only creator can cancel)
+   */
+  async cancelMergeRequest(
+    userId: string,
+    mergeRequestId: string,
+  ): Promise<MergeRequest> {
+    this.logger.log(
+      `User ${userId} cancelling merge request: ${mergeRequestId}`,
+    );
+
+    const mergeRequest = await this.mergeRequestRepo.findOne({
+      where: { id: mergeRequestId },
+      relations: ['sourceBranch', 'targetBranch', 'createdBy'],
+    });
+
+    if (!mergeRequest) {
+      throw new NotFoundException('Merge request not found');
+    }
+
+    // Check if user is the creator
+    if (mergeRequest.createdById !== userId) {
+      throw new ForbiddenException(
+        'Only the creator can cancel this merge request',
+      );
+    }
+
+    // Can only cancel draft, reviewing, pending, or conflict merge requests
+    if (
+      ![
+        MergeRequestStatus.DRAFT,
+        MergeRequestStatus.REVIEWING,
+        MergeRequestStatus.PENDING,
+        MergeRequestStatus.CONFLICT,
+      ].includes(mergeRequest.status)
+    ) {
+      throw new BadRequestException(
+        'Can only cancel draft, reviewing, pending, or conflict merge requests',
+      );
+    }
+
+    mergeRequest.status = MergeRequestStatus.CANCELLED;
+    const savedMR = await this.mergeRequestRepo.save(mergeRequest);
+
+    this.logger.log(`Merge request cancelled: ${mergeRequestId}`);
+    return await this.mergeRequestRepo.findOneOrFail({
+      where: { id: savedMR.id },
+      relations: ['sourceBranch', 'targetBranch', 'createdBy'],
+    });
+  }
+
+  /**
+   * Update conflicts in changes after re-detection
+   */
+  private async updateConflictsInChanges(
+    mergeRequestId: string,
+    conflicts: any[],
+  ): Promise<void> {
+    for (const conflict of conflicts) {
+      const change = await this.featureChangeRepo.findOne({
+        where: {
+          mergeRequestId,
+          featureId: conflict.featureId,
+        },
+      });
+
+      if (change) {
+        change.hasConflict = true;
+        change.conflictData = conflict;
+        await this.featureChangeRepo.save(change);
+      }
+    }
   }
 
   /**
@@ -845,20 +1169,33 @@ export class GISVersioningService {
       throw new NotFoundException('Merge request not found');
     }
 
-    if (mergeRequest.status === MergeRequestStatus.CONFLICT) {
-      throw new BadRequestException('Cannot merge with unresolved conflicts');
+    if (mergeRequest.status !== MergeRequestStatus.REVIEWING) {
+      throw new BadRequestException(
+        'Can only approve merge requests that are in reviewing status',
+      );
     }
 
-    if (mergeRequest.status === MergeRequestStatus.APPROVED) {
-      throw new BadRequestException('Merge request already approved');
+    const unresolvedConflicts = await this.featureChangeRepo.count({
+      where: {
+        mergeRequestId: mergeRequest.id,
+        hasConflict: true,
+      },
+    });
+
+    if (unresolvedConflicts > 0) {
+      throw new BadRequestException(
+        `Cannot approve merge request with ${unresolvedConflicts} unresolved conflicts`,
+      );
     }
+
+    mergeRequest.status = MergeRequestStatus.PENDING;
+    await this.mergeRequestRepo.save(mergeRequest);
 
     const queryRunner = this.dataSource.createQueryRunner();
     await queryRunner.connect();
     await queryRunner.startTransaction();
 
     try {
-      // Apply changes to main branch
       for (const change of mergeRequest.changes) {
         const sourceFeature = await this.featureRepo.findOne({
           where: { id: change.featureId },
@@ -866,11 +1203,6 @@ export class GISVersioningService {
 
         if (!sourceFeature) {
           this.logger.warn(`Source feature not found: ${change.featureId}`);
-          continue;
-        }
-
-        if (!sourceFeature.parentFeatureId) {
-          this.logger.warn(`Parent Feature id is empty`);
           continue;
         }
 
@@ -887,6 +1219,11 @@ export class GISVersioningService {
           });
           await queryRunner.manager.save(newFeature);
         } else if (change.changeType === ChangeType.MODIFY) {
+          if (!sourceFeature.parentFeatureId) {
+            this.logger.warn(`Parent Feature id is empty for modify change`);
+            continue;
+          }
+
           const targetFeature = await queryRunner.manager.findOne(Feature, {
             where: { id: sourceFeature.parentFeatureId },
           });
@@ -900,7 +1237,11 @@ export class GISVersioningService {
             await queryRunner.manager.save(targetFeature);
           }
         } else if (change.changeType === ChangeType.DELETE) {
-          // Delete feature from main
+          if (!sourceFeature.parentFeatureId) {
+            this.logger.warn(`Parent Feature id is empty for delete change`);
+            continue;
+          }
+
           const targetFeature = await queryRunner.manager.findOne(Feature, {
             where: { id: sourceFeature.parentFeatureId },
           });
@@ -914,13 +1255,11 @@ export class GISVersioningService {
         }
       }
 
-      // Update merge request status
       mergeRequest.status = MergeRequestStatus.APPROVED;
       mergeRequest.reviewedById = adminId;
       mergeRequest.reviewedAt = new Date();
       await queryRunner.manager.save(mergeRequest);
 
-      // Update source branch status
       const sourceBranch = await queryRunner.manager.findOne(Branch, {
         where: { id: mergeRequest.sourceBranchId },
       });

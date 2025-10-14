@@ -45,7 +45,7 @@ export class Feature {
   version: number;
 
   @Column({ type: 'uuid', nullable: true, name: 'parent_feature_id' })
-  parentFeatureId: string | null; // Track original feature from main branch
+  parentFeatureId: string | null;
 
   @Column({ type: 'int', nullable: true, name: 'parent_version' })
   parentVersion: number | null;

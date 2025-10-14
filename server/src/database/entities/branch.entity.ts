@@ -39,7 +39,7 @@ export class Branch {
   createdById: string;
 
   @Column({ type: 'uuid', nullable: true, name: 'branched_from' })
-  branchedFrom: string | null; // Main branch ID
+  branchedFrom: string | null;
 
   @Column({ type: 'enum', enum: BranchStatus, default: BranchStatus.ACTIVE })
   status: BranchStatus;

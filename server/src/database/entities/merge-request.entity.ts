@@ -60,7 +60,7 @@ export class MergeRequest {
   reviewComment: string;
 
   @Column({ type: 'jsonb', nullable: true })
-  conflicts: any[]; // Store conflict information
+  conflicts: any[];
 
   @CreateDateColumn({ name: 'created_at', type: 'timestamp with time zone' })
   createdAt: Date;
