@@ -180,4 +180,20 @@ export class BranchController {
   async deleteFeature(@Request() req, @Param('featureId') featureId: string) {
     return await this.gisService.deleteFeature(req.user.id, featureId);
   }
+
+  @Get(':branchId/has-active-merge-request')
+  @ApiOperation({ summary: 'Check if branch has active merge request' })
+  @ApiResponse({
+    status: 200,
+    description: 'Check completed',
+    schema: {
+      example: {
+        hasActiveMergeRequest: true,
+      },
+    },
+  })
+  async hasActiveMergeRequest(@Param('branchId') branchId: string) {
+    const hasActive = await this.gisService.hasActiveMergeRequest(branchId);
+    return { hasActiveMergeRequest: hasActive };
+  }
 }
