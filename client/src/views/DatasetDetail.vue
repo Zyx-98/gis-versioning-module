@@ -95,6 +95,8 @@
                           ? 'bg-blue-100 text-blue-800'
                           : branch.status === 'merged'
                           ? 'bg-gray-100 text-gray-800'
+                          : branch.status === 'deleted'
+                          ? 'bg-red-100 text-red-800'
                           : 'bg-red-100 text-red-800',
                       ]"
                     >
@@ -102,18 +104,29 @@
                     </span>
                   </div>
                   <p class="text-sm text-gray-600 mt-1">
-                    Created
+                    Created by {{ branch.createdBy?.name }} on
                     {{ new Date(branch.createdAt).toLocaleDateString() }}
                   </p>
                 </div>
 
-                <button
-                  v-if="branch.status === 'active'"
-                  @click="openMapEditor(branch.id)"
-                  class="px-4 py-2 bg-primary-600 text-white rounded-md hover:bg-primary-700"
-                >
-                  Open Map
-                </button>
+                <div class="flex items-center gap-2">
+                  <button
+                    v-if="branch.status === 'active'"
+                    @click="openMapEditor(branch.id)"
+                    class="px-4 py-2 bg-primary-600 text-white rounded-md hover:bg-primary-700"
+                  >
+                    Open Map
+                  </button>
+                  
+                  <button
+                    v-if="!branch.isMain && branch.status === 'active' && canDeleteBranch(branch)"
+                    @click="confirmDeleteBranch(branch)"
+                    class="px-4 py-2 bg-red-600 text-white rounded-md hover:bg-red-700"
+                    title="Delete branch"
+                  >
+                    Delete
+                  </button>
+                </div>
               </div>
             </div>
           </div>
@@ -139,12 +152,18 @@
                     <span
                       :class="[
                         'px-2 py-1 text-xs font-medium rounded',
-                        mr.status === 'pending'
+                        mr.status === 'draft'
+                          ? 'bg-gray-100 text-gray-800'
+                          : mr.status === 'reviewing'
+                          ? 'bg-blue-100 text-blue-800'
+                          : mr.status === 'pending'
                           ? 'bg-yellow-100 text-yellow-800'
                           : mr.status === 'approved'
                           ? 'bg-green-100 text-green-800'
                           : mr.status === 'conflict'
                           ? 'bg-red-100 text-red-800'
+                          : mr.status === 'cancelled'
+                          ? 'bg-gray-100 text-gray-600'
                           : 'bg-gray-100 text-gray-800',
                       ]"
                     >
@@ -228,10 +247,13 @@
 import { ref, onMounted, computed } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useDatasetStore } from "../stores/dataset";
+import { useAuthStore } from "../stores/auth";
+import api from "../services/api";
 
 const route = useRoute();
 const router = useRouter();
 const datasetStore = useDatasetStore();
+const authStore = useAuthStore();
 
 const activeTab = ref("branches");
 const showCheckoutModal = ref(false);
@@ -252,6 +274,26 @@ onMounted(async () => {
   await datasetStore.fetchBranches(route.params.id);
   await datasetStore.fetchMergeRequests(route.params.id);
 });
+
+const canDeleteBranch = (branch) => {
+  return branch.createdById === authStore.user?.id;
+};
+
+const confirmDeleteBranch = async (branch) => {
+  if (confirm(`Are you sure you want to delete branch "${branch.name}"? This action cannot be undone.`)) {
+    try {
+      await api.deleteBranch(branch.id);
+      alert("Branch deleted successfully!");
+      await datasetStore.fetchBranches(route.params.id);
+    } catch (error) {
+      console.error("Failed to delete branch:", error);
+      alert(
+        error.response?.data?.message ||
+          "Failed to delete branch. Please try again."
+      );
+    }
+  }
+};
 
 const openMapEditor = (branchId) => {
   router.push(`/map/${route.params.id}/${branchId}`);

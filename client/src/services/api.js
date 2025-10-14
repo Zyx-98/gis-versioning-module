@@ -74,6 +74,10 @@ export default {
     return api.get(`/branches/${id}`);
   },
 
+  deleteBranch(id) {
+    return api.delete(`/branches/${id}`);
+  },
+
   getBranchFeatures(branchId, includeDeleted = false) {
     return api.get(`/branches/${branchId}/features`, {
       params: { includeDeleted },
@@ -85,7 +89,7 @@ export default {
   },
 
   getBranchChanges(branchId) {
-    return api.get(`/branches/${branchId}/changes`)
+    return api.get(`/branches/${branchId}/changes`);
   },
 
   addFeature(branchId, featureData) {
@@ -106,6 +110,18 @@ export default {
 
   getMergeRequest(id) {
     return api.get(`/merge-requests/${id}`);
+  },
+
+  updateMergeRequest(id, data) {
+    return api.put(`/merge-requests/${id}`, data);
+  },
+
+  submitMergeRequestForReview(id) {
+    return api.post(`/merge-requests/${id}/submit-for-review`);
+  },
+
+  cancelMergeRequest(id) {
+    return api.post(`/merge-requests/${id}/cancel`);
   },
 
   getMergeRequestChanges(id) {

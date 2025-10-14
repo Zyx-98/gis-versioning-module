@@ -1,4 +1,21 @@
 import { MigrationInterface, QueryRunner } from 'typeorm';
+import {
+  BranchStatus,
+  ChangeType,
+  FeatureStatus,
+  MergeRequestStatus,
+  UserRole,
+} from '../enums';
+
+function generateEnumSql(
+  enumName: string,
+  enumObj: Record<string, string>,
+): string {
+  const values = Object.values(enumObj)
+    .map((v) => `'${v}'`)
+    .join(', ');
+  return `CREATE TYPE "${enumName}" AS ENUM(${values});`;
+}
 
 export class InitialSchema1760170415841 implements MigrationInterface {
   public async up(queryRunner: QueryRunner): Promise<void> {
@@ -18,9 +35,7 @@ export class InitialSchema1760170415841 implements MigrationInterface {
     `);
 
     // Create users table
-    await queryRunner.query(`
-      CREATE TYPE "user_role_enum" AS ENUM('admin', 'member')
-    `);
+    await queryRunner.query(generateEnumSql('user_role_enum', UserRole));
 
     await queryRunner.query(`
       CREATE TABLE "users" (
@@ -56,9 +71,9 @@ export class InitialSchema1760170415841 implements MigrationInterface {
     `);
 
     // Create branches table
-    await queryRunner.query(`
-      CREATE TYPE "branch_status_enum" AS ENUM('active', 'merged', 'rejected')
-    `);
+    await queryRunner.query(
+      generateEnumSql('branch_status_enum', BranchStatus),
+    );
 
     await queryRunner.query(`
       CREATE TABLE "branches" (
@@ -80,9 +95,9 @@ export class InitialSchema1760170415841 implements MigrationInterface {
     `);
 
     // Create features table with PostGIS geometry
-    await queryRunner.query(`
-      CREATE TYPE "feature_status_enum" AS ENUM('active', 'deleted')
-    `);
+    await queryRunner.query(
+      generateEnumSql('feature_status_enum', FeatureStatus),
+    );
 
     await queryRunner.query(`
       CREATE TABLE "features" (
@@ -116,9 +131,9 @@ export class InitialSchema1760170415841 implements MigrationInterface {
     `);
 
     // Create merge_requests table
-    await queryRunner.query(`
-      CREATE TYPE "merge_request_status_enum" AS ENUM('pending', 'approved', 'rejected', 'conflict')
-    `);
+    await queryRunner.query(
+      generateEnumSql('merge_request_status_enum', MergeRequestStatus),
+    );
 
     await queryRunner.query(`
       CREATE TABLE "merge_requests" (
@@ -146,9 +161,7 @@ export class InitialSchema1760170415841 implements MigrationInterface {
     `);
 
     // Create feature_changes table
-    await queryRunner.query(`
-      CREATE TYPE "change_type_enum" AS ENUM('add', 'modify', 'delete')
-    `);
+    await queryRunner.query(generateEnumSql('change_type_enum', ChangeType));
 
     await queryRunner.query(`
       CREATE TABLE "feature_changes" (

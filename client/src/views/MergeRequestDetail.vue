@@ -38,21 +38,55 @@
             <span
               :class="[
                 'px-3 py-1 text-sm font-medium rounded-full',
-                mergeRequest?.status === 'pending'
+                mergeRequest?.status === 'draft'
+                  ? 'bg-gray-100 text-gray-800'
+                  : mergeRequest?.status === 'reviewing'
+                  ? 'bg-blue-100 text-blue-800'
+                  : mergeRequest?.status === 'pending'
                   ? 'bg-yellow-100 text-yellow-800'
                   : mergeRequest?.status === 'approved'
                   ? 'bg-green-100 text-green-800'
                   : mergeRequest?.status === 'conflict'
                   ? 'bg-red-100 text-red-800'
+                  : mergeRequest?.status === 'cancelled'
+                  ? 'bg-gray-100 text-gray-600'
                   : 'bg-gray-100 text-gray-800',
               ]"
             >
               {{ mergeRequest?.status }}
             </span>
 
+            <!-- Creator Actions -->
+            <template v-if="isCreator && canEdit">
+              <button
+                @click="showEditModal = true"
+                class="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
+              >
+                Edit
+              </button>
+            </template>
+
+            <template v-if="isCreator && canSubmitForReview">
+              <button
+                @click="handleSubmitForReview"
+                class="px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700"
+              >
+                Submit for Review
+              </button>
+            </template>
+
+            <template v-if="isCreator && canCancel">
+              <button
+                @click="handleCancel"
+                class="px-4 py-2 bg-red-600 text-white rounded-md hover:bg-red-700"
+              >
+                Cancel
+              </button>
+            </template>
+
             <!-- Admin Actions -->
             <template
-              v-if="authStore.isAdmin && mergeRequest?.status === 'pending'"
+              v-if="authStore.isAdmin && mergeRequest?.status === 'reviewing'"
             >
               <button
                 @click="handleApprove"
@@ -68,6 +102,37 @@
               </button>
             </template>
           </div>
+        </div>
+
+        <!-- Status Info Banner -->
+        <div
+          v-if="mergeRequest?.status === 'draft'"
+          class="mt-4 px-4 py-3 bg-gray-50 border border-gray-200 rounded-lg"
+        >
+          <p class="text-sm text-gray-700">
+            <strong>Draft:</strong> This merge request is in draft mode. You can
+            edit the description and submit it for admin review when ready.
+          </p>
+        </div>
+
+        <div
+          v-if="mergeRequest?.status === 'reviewing'"
+          class="mt-4 px-4 py-3 bg-blue-50 border border-blue-200 rounded-lg"
+        >
+          <p class="text-sm text-blue-700">
+            <strong>Under Review:</strong> This merge request has been submitted
+            and is waiting for admin approval.
+          </p>
+        </div>
+
+        <div
+          v-if="mergeRequest?.status === 'cancelled'"
+          class="mt-4 px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg"
+        >
+          <p class="text-sm text-gray-600">
+            <strong>Cancelled:</strong> This merge request has been cancelled by
+            the creator.
+          </p>
         </div>
       </div>
     </header>
@@ -124,6 +189,7 @@
                 {{ conflicts.length }} Conflict(s) Found
               </h3>
               <button
+                v-if="isCreator"
                 @click="autoResolveAll"
                 class="ml-auto px-3 py-1 bg-red-600 text-white text-sm rounded hover:bg-red-700"
               >
@@ -146,7 +212,7 @@
                       Feature ID: {{ conflict.featureId }}
                     </p>
                   </div>
-                  <div class="flex gap-2">
+                  <div v-if="isCreator" class="flex gap-2">
                     <button
                       @click="resolveConflict(conflict.id, 'keep_source')"
                       class="px-3 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700"
@@ -212,6 +278,45 @@
       </div>
     </main>
 
+    <!-- Edit Description Modal -->
+    <teleport to="body">
+      <div v-if="showEditModal" class="fixed inset-0 z-50 overflow-y-auto">
+        <div class="flex items-center justify-center min-h-screen px-4">
+          <div
+            class="fixed inset-0 bg-gray-500 bg-opacity-75"
+            @click="showEditModal = false"
+          ></div>
+
+          <div class="relative bg-white rounded-lg p-6 max-w-md w-full">
+            <h3 class="text-lg font-semibold mb-4">Edit Merge Request</h3>
+
+            <textarea
+              v-model="editDescription"
+              rows="4"
+              placeholder="Describe your changes..."
+              class="w-full px-3 py-2 border border-gray-300 rounded-md"
+            ></textarea>
+
+            <div class="mt-4 flex gap-2">
+              <button
+                @click="handleUpdate"
+                :disabled="updating"
+                class="flex-1 px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50"
+              >
+                {{ updating ? "Updating..." : "Update" }}
+              </button>
+              <button
+                @click="showEditModal = false"
+                class="px-4 py-2 border border-gray-300 rounded-md hover:bg-gray-50"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </teleport>
+
     <!-- Reject Modal -->
     <teleport to="body">
       <div v-if="showRejectModal" class="fixed inset-0 z-50 overflow-y-auto">
@@ -255,7 +360,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from "vue";
+import { ref, onMounted, computed } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useAuthStore } from "../stores/auth";
 import api from "../services/api";
@@ -269,7 +374,33 @@ const changes = ref([]);
 const conflicts = ref([]);
 const statistics = ref(null);
 const showRejectModal = ref(false);
+const showEditModal = ref(false);
 const rejectComment = ref("");
+const editDescription = ref("");
+const updating = ref(false);
+
+const isCreator = computed(() => {
+  return mergeRequest.value?.createdById === authStore.user?.id;
+});
+
+const canEdit = computed(() => {
+  return ["draft", "reviewing", "conflict"].includes(
+    mergeRequest.value?.status
+  );
+});
+
+const canSubmitForReview = computed(() => {
+  return (
+    ["draft", "conflict"].includes(mergeRequest.value?.status) &&
+    conflicts.value.length === 0
+  );
+});
+
+const canCancel = computed(() => {
+  return ["draft", "reviewing", "pending", "conflict"].includes(
+    mergeRequest.value?.status
+  );
+});
 
 onMounted(async () => {
   await loadMergeRequest();
@@ -288,8 +419,52 @@ const loadMergeRequest = async () => {
     changes.value = changesRes.data;
     conflicts.value = conflictsRes.data;
     statistics.value = statsRes.data;
+    editDescription.value = mergeRequest.value.description || "";
   } catch (error) {
     console.error("Failed to load merge request:", error);
+  }
+};
+
+const handleUpdate = async () => {
+  updating.value = true;
+  try {
+    await api.updateMergeRequest(route.params.id, {
+      description: editDescription.value,
+    });
+    showEditModal.value = false;
+    alert("Merge request updated successfully!");
+    await loadMergeRequest();
+  } catch (error) {
+    console.error("Failed to update merge request:", error);
+    alert(error.response?.data?.message || "Failed to update merge request");
+  } finally {
+    updating.value = false;
+  }
+};
+
+const handleSubmitForReview = async () => {
+  if (!confirm("Submit this merge request for admin review?")) return;
+
+  try {
+    await api.submitMergeRequestForReview(route.params.id);
+    alert("Merge request submitted for review!");
+    await loadMergeRequest();
+  } catch (error) {
+    console.error("Failed to submit for review:", error);
+    alert(error.response?.data?.message || "Failed to submit for review");
+  }
+};
+
+const handleCancel = async () => {
+  if (!confirm("Are you sure you want to cancel this merge request?")) return;
+
+  try {
+    await api.cancelMergeRequest(route.params.id);
+    alert("Merge request cancelled");
+    await loadMergeRequest();
+  } catch (error) {
+    console.error("Failed to cancel merge request:", error);
+    alert(error.response?.data?.message || "Failed to cancel merge request");
   }
 };
 

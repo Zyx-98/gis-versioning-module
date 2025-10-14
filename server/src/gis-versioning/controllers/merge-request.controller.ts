@@ -2,6 +2,7 @@ import {
   Controller,
   Get,
   Post,
+  Put,
   Body,
   Param,
   Query,
@@ -22,7 +23,11 @@ import { ConflictResolutionService } from '../services/conflict-resolution.servi
 import { JwtAuthGuard } from '../../auth/jwt-auth.guard';
 import { RolesGuard } from '../../auth/roles.guard';
 import { Roles } from '../../auth/roles.decorator';
-import { CreateMergeRequestDto, ReviewMergeRequestDto } from '../dto';
+import {
+  CreateMergeRequestDto,
+  ReviewMergeRequestDto,
+  UpdateMergeRequestDto,
+} from '../dto';
 import { UserRole } from 'src/database/enums';
 
 @ApiTags('Merge Requests')
@@ -37,14 +42,14 @@ export class MergeRequestController {
 
   @Post()
   @HttpCode(HttpStatus.CREATED)
-  @ApiOperation({ summary: 'Create a new merge request' })
+  @ApiOperation({ summary: 'Create a new merge request (creates as draft)' })
   @ApiResponse({
     status: 201,
-    description: 'Merge request created successfully',
+    description: 'Merge request created successfully as draft',
     schema: {
       example: {
         id: 'uuid',
-        status: 'pending',
+        status: 'draft',
         conflicts: null,
       },
     },
@@ -72,6 +77,93 @@ export class MergeRequestController {
   @ApiResponse({ status: 404, description: 'Merge request not found' })
   async getMergeRequest(@Param('mergeRequestId') mergeRequestId: string) {
     return await this.gisService.getMergeRequestById(mergeRequestId);
+  }
+
+  @Put(':mergeRequestId')
+  @ApiOperation({
+    summary:
+      'Update merge request description (only creator can update draft/reviewing MR)',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Merge request updated successfully',
+  })
+  @ApiResponse({
+    status: 403,
+    description: 'Forbidden - Only creator can update their merge request',
+  })
+  @ApiResponse({
+    status: 400,
+    description:
+      'Bad request - Cannot update approved/rejected/cancelled merge request',
+  })
+  @ApiResponse({ status: 404, description: 'Merge request not found' })
+  async updateMergeRequest(
+    @Request() req,
+    @Param('mergeRequestId') mergeRequestId: string,
+    @Body() updateMergeRequestDto: UpdateMergeRequestDto,
+  ) {
+    return await this.gisService.updateMergeRequest(
+      req.user.id,
+      mergeRequestId,
+      updateMergeRequestDto,
+    );
+  }
+
+  @Post(':mergeRequestId/submit-for-review')
+  @ApiOperation({
+    summary: 'Submit merge request for admin review (member action)',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Merge request submitted for review',
+  })
+  @ApiResponse({
+    status: 403,
+    description: 'Forbidden - Only creator can submit their merge request',
+  })
+  @ApiResponse({
+    status: 400,
+    description:
+      'Bad request - MR must be in draft status or have unresolved conflicts',
+  })
+  @ApiResponse({ status: 404, description: 'Merge request not found' })
+  async submitForReview(
+    @Request() req,
+    @Param('mergeRequestId') mergeRequestId: string,
+  ) {
+    return await this.gisService.submitMergeRequestForReview(
+      req.user.id,
+      mergeRequestId,
+    );
+  }
+
+  @Post(':mergeRequestId/cancel')
+  @ApiOperation({
+    summary: 'Cancel a pending merge request (only creator can cancel)',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Merge request cancelled successfully',
+  })
+  @ApiResponse({
+    status: 403,
+    description: 'Forbidden - Only creator can cancel their merge request',
+  })
+  @ApiResponse({
+    status: 400,
+    description:
+      'Bad request - Can only cancel draft/reviewing/pending/conflict merge requests',
+  })
+  @ApiResponse({ status: 404, description: 'Merge request not found' })
+  async cancelMergeRequest(
+    @Request() req,
+    @Param('mergeRequestId') mergeRequestId: string,
+  ) {
+    return await this.gisService.cancelMergeRequest(
+      req.user.id,
+      mergeRequestId,
+    );
   }
 
   @Get(':mergeRequestId/changes')
@@ -127,7 +219,8 @@ export class MergeRequestController {
   })
   @ApiResponse({
     status: 400,
-    description: 'Bad request - Cannot approve with unresolved conflicts',
+    description:
+      'Bad request - Cannot approve with unresolved conflicts or must be in reviewing status',
   })
   @ApiResponse({ status: 404, description: 'Merge request not found' })
   async approveMergeRequest(

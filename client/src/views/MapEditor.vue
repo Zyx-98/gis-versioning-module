@@ -86,15 +86,13 @@
                 />
               </svg>
             </button>
-            
+
             <!-- Edit Mode Button -->
             <button
               @click="toggleEditMode"
               :class="[
                 'p-2 rounded hover:bg-gray-100',
-                editMode
-                  ? 'bg-green-100 text-green-700'
-                  : 'text-gray-700',
+                editMode ? 'bg-green-100 text-green-700' : 'text-gray-700',
               ]"
               title="Edit Mode (Move/Reshape)"
             >
@@ -252,7 +250,8 @@
             />
           </svg>
           <span class="font-medium">
-            Edit Mode Active: Click and drag features to move/reshape them. Click "Save Changes" when done.
+            Edit Mode Active: Click and drag features to move/reshape them.
+            Click "Save Changes" when done.
           </span>
         </div>
       </div>
@@ -743,8 +742,8 @@ const initializeMap = () => {
   map.value.addControl(drawControl.value);
 
   map.value.on(L.Draw.Event.CREATED, handleFeatureCreated);
-  map.value.on('draw:edited', handleFeatureEdited);
-  map.value.on('draw:deleted', handleFeatureDeleted);
+  map.value.on("draw:edited", handleFeatureEdited);
+  map.value.on("draw:deleted", handleFeatureDeleted);
 
   drawnItems.value.on("click", handleFeatureClick);
 };
@@ -761,7 +760,7 @@ const loadFeatures = async () => {
     features.value.forEach((feature) => {
       addFeatureToMap(feature);
     });
-    
+
     console.log(`Loaded ${features.value.length} features`);
   } catch (error) {
     console.error("Failed to load features:", error);
@@ -807,7 +806,7 @@ const toggleEditMode = () => {
     // Enable edit mode
     editMode.value = true;
     drawMode.value = "select";
-    
+
     // Cancel any active drawing
     if (rawMap._drawingHandler) {
       try {
@@ -817,7 +816,7 @@ const toggleEditMode = () => {
         console.error("Error canceling drawing:", e);
       }
     }
-    
+
     // Enable editing on all layers
     let enabledCount = 0;
     rawDrawnItems.eachLayer((layer) => {
@@ -826,12 +825,12 @@ const toggleEditMode = () => {
         enabledCount++;
       }
     });
-    
+
     console.log(`Edit mode enabled on ${enabledCount} layers`);
   } else {
     // Disable edit mode
     editMode.value = false;
-    
+
     let disabledCount = 0;
     rawDrawnItems.eachLayer((layer) => {
       if (layer.editing && layer.editing.enabled()) {
@@ -840,7 +839,7 @@ const toggleEditMode = () => {
           const newGeometry = layer.toGeoJSON().geometry;
           const oldGeometry = JSON.stringify(layer.feature.geometry);
           const newGeometryStr = JSON.stringify(newGeometry);
-          
+
           if (oldGeometry !== newGeometryStr) {
             layer.feature.geometry = newGeometry;
             hasUnsavedChanges.value = true;
@@ -851,7 +850,7 @@ const toggleEditMode = () => {
         disabledCount++;
       }
     });
-    
+
     console.log(`Edit mode disabled on ${disabledCount} layers`);
   }
 };
@@ -934,12 +933,12 @@ const cancelDrawing = () => {
       console.error("Error canceling drawing:", e);
     }
   }
-  
+
   // Also disable edit mode if active
   if (editMode.value) {
     toggleEditMode();
   }
-  
+
   drawMode.value = "select";
 };
 
@@ -981,7 +980,7 @@ const handleFeatureEdited = (e) => {
       console.log(`Edited feature: ${layer.feature.id}`);
     }
   });
-  
+
   console.log(`Total edited features: ${editedCount}`);
 };
 
@@ -1226,7 +1225,7 @@ const saveChanges = async () => {
 
     hasUnsavedChanges.value = false;
     alert(`Successfully saved ${totalChanges} change(s)!`);
-    
+
     // Reload features from server to sync state
     await loadFeatures();
 
@@ -1255,15 +1254,19 @@ const createMergeRequest = async () => {
   creatingMR.value = true;
 
   try {
-    await datasetStore.createMergeRequest({
+    const response = await datasetStore.createMergeRequest({
       sourceBranchId: route.params.branchId,
       description: mergeRequestDescription.value,
     });
 
     showMergeRequestModal.value = false;
     mergeRequestDescription.value = "";
-    alert("Merge request created successfully!");
-    router.push(`/datasets/${route.params.datasetId}`);
+
+    alert(
+      "Merge request created as draft! You can edit it and submit for review when ready."
+    );
+
+    router.push(`/merge-requests/${response.id}`);
   } catch (error) {
     console.error("Failed to create merge request:", error);
 
