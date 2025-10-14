@@ -130,11 +130,19 @@ export class BranchController {
 
   @Post(':branchId/features')
   @HttpCode(HttpStatus.CREATED)
-  @ApiOperation({ summary: 'Add a new feature to a branch' })
+  @ApiOperation({
+    summary:
+      'Add a new feature to a branch (only branch creator or admin for main)',
+  })
   @ApiResponse({ status: 201, description: 'Feature added successfully' })
   @ApiResponse({
+    status: 403,
+    description: 'Forbidden - You can only edit branches you created',
+  })
+  @ApiResponse({
     status: 400,
-    description: 'Bad request - Cannot modify main branch or invalid geometry',
+    description:
+      'Bad request - Cannot modify inactive branch or invalid geometry',
   })
   @ApiResponse({ status: 404, description: 'Branch not found' })
   async addFeature(
@@ -150,11 +158,18 @@ export class BranchController {
   }
 
   @Put(':branchId/features/:featureId')
-  @ApiOperation({ summary: 'Update a feature in a branch' })
+  @ApiOperation({
+    summary:
+      'Update a feature in a branch (only branch creator or admin for main)',
+  })
   @ApiResponse({ status: 200, description: 'Feature updated successfully' })
   @ApiResponse({
+    status: 403,
+    description: 'Forbidden - You can only edit branches you created',
+  })
+  @ApiResponse({
     status: 400,
-    description: 'Bad request - Cannot modify main branch',
+    description: 'Bad request - Cannot modify inactive branch',
   })
   @ApiResponse({ status: 404, description: 'Feature not found' })
   async updateFeature(
@@ -170,11 +185,18 @@ export class BranchController {
   }
 
   @Delete(':branchId/features/:featureId')
-  @ApiOperation({ summary: 'Delete a feature from a branch (soft delete)' })
+  @ApiOperation({
+    summary:
+      'Delete a feature from a branch (only branch creator or admin for main) (soft delete)',
+  })
   @ApiResponse({ status: 200, description: 'Feature deleted successfully' })
   @ApiResponse({
+    status: 403,
+    description: 'Forbidden - You can only edit branches you created',
+  })
+  @ApiResponse({
     status: 400,
-    description: 'Bad request - Cannot modify main branch',
+    description: 'Bad request - Cannot modify inactive branch',
   })
   @ApiResponse({ status: 404, description: 'Feature not found' })
   async deleteFeature(@Request() req, @Param('featureId') featureId: string) {
@@ -195,5 +217,25 @@ export class BranchController {
   async hasActiveMergeRequest(@Param('branchId') branchId: string) {
     const hasActive = await this.gisService.hasActiveMergeRequest(branchId);
     return { hasActiveMergeRequest: hasActive };
+  }
+
+  @Get(':branchId/can-edit')
+  @ApiOperation({ summary: 'Check if current user can edit this branch' })
+  @ApiResponse({
+    status: 200,
+    description: 'Permission check completed',
+    schema: {
+      example: {
+        canEdit: true,
+        reason: 'You can only edit branches that you created',
+      },
+    },
+  })
+  async canEditBranch(@Request() req, @Param('branchId') branchId: string) {
+    return await this.gisService.canUserEditBranch(
+      req.user.id,
+      branchId,
+      req.user.role,
+    );
   }
 }

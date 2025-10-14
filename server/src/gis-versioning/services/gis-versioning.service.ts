@@ -258,6 +258,7 @@ export class GISVersioningService {
 
     const branch = await this.branchRepo.findOne({
       where: { id: branchId },
+      relations: ['createdBy'],
     });
 
     if (!branch) {
@@ -270,6 +271,13 @@ export class GISVersioningService {
 
     if (branch.status !== BranchStatus.ACTIVE) {
       throw new BadRequestException('Cannot modify inactive branch');
+    }
+
+    // Check if user is the creator of the branch
+    if (branch.createdById !== userId) {
+      throw new ForbiddenException(
+        'You can only edit branches that you created',
+      );
     }
 
     this.validateGeometry(createFeatureDto.geometry);
@@ -303,7 +311,7 @@ export class GISVersioningService {
 
     const feature = await this.featureRepo.findOne({
       where: { id: featureId },
-      relations: ['branch'],
+      relations: ['branch', 'branch.createdBy'],
     });
 
     if (!feature) {
@@ -317,6 +325,13 @@ export class GISVersioningService {
     if (feature.branch.status !== BranchStatus.ACTIVE) {
       throw new BadRequestException(
         'Cannot modify features in inactive branch',
+      );
+    }
+
+    // Check if user is the creator of the branch
+    if (feature.branch.createdById !== userId) {
+      throw new ForbiddenException(
+        'You can only edit branches that you created',
       );
     }
 
@@ -349,7 +364,7 @@ export class GISVersioningService {
 
     const feature = await this.featureRepo.findOne({
       where: { id: featureId },
-      relations: ['branch'],
+      relations: ['branch', 'branch.createdBy'],
     });
 
     if (!feature) {
@@ -366,6 +381,13 @@ export class GISVersioningService {
       );
     }
 
+    // Check if user is the creator of the branch
+    if (feature.branch.createdById !== userId) {
+      throw new ForbiddenException(
+        'You can only edit branches that you created',
+      );
+    }
+
     feature.status = FeatureStatus.DELETED;
     feature.updatedById = userId;
     feature.updatedAt = new Date();
@@ -374,6 +396,45 @@ export class GISVersioningService {
     this.logger.log(`Feature deleted: ${featureId}`);
 
     return savedFeature;
+  }
+
+  async canUserEditBranch(
+    userId: string,
+    branchId: string,
+    userRole: UserRole,
+  ): Promise<{ canEdit: boolean; reason?: string }> {
+    const branch = await this.branchRepo.findOne({
+      where: { id: branchId },
+      relations: ['createdBy'],
+    });
+
+    if (!branch) {
+      return { canEdit: false, reason: 'Branch not found' };
+    }
+
+    if (branch.isMain) {
+      if (userRole === UserRole.ADMIN) {
+        return { canEdit: true };
+      } else {
+        return {
+          canEdit: false,
+          reason: 'Only admins can edit the main branch',
+        };
+      }
+    }
+
+    if (branch.status !== BranchStatus.ACTIVE) {
+      return { canEdit: false, reason: 'Cannot edit inactive branch' };
+    }
+
+    if (branch.createdById !== userId) {
+      return {
+        canEdit: false,
+        reason: 'You can only edit branches that you created',
+      };
+    }
+
+    return { canEdit: true };
   }
 
   /**

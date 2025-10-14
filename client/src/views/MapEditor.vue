@@ -57,11 +57,23 @@
               Check Updates
             </button>
           </div>
+
+          <!-- Active MR Indicator -->
+          <div v-if="hasActiveMR" class="flex items-center gap-2">
+            <span
+              class="px-2 py-1 text-xs font-medium bg-orange-100 text-orange-800 rounded"
+            >
+              Has Active MR
+            </span>
+          </div>
         </div>
 
         <div class="flex items-center gap-2">
-          <!-- Draw Tools -->
-          <div class="flex items-center gap-1 border-r pr-2 mr-2">
+          <!-- Draw Tools - Only show if user can edit -->
+          <div
+            v-if="canEditBranch"
+            class="flex items-center gap-1 border-r pr-2 mr-2"
+          >
             <button
               @click="setDrawMode('select')"
               :class="[
@@ -213,6 +225,7 @@
 
           <!-- Actions -->
           <button
+            v-if="canEditBranch"
             @click="saveChanges"
             :disabled="!hasUnsavedChanges"
             class="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
@@ -221,18 +234,29 @@
           </button>
 
           <button
-            v-if="!currentBranch?.isMain"
+            v-if="!currentBranch?.isMain && canEditBranch"
             @click="prepareCreateMergeRequest"
-            class="px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700"
+            :disabled="hasActiveMR || checkingActiveMR"
+            :class="[
+              'px-4 py-2 rounded-md',
+              hasActiveMR || checkingActiveMR
+                ? 'bg-gray-400 text-gray-700 cursor-not-allowed'
+                : 'bg-green-600 text-white hover:bg-green-700',
+            ]"
+            :title="
+              hasActiveMR
+                ? 'This branch already has an active merge request'
+                : 'Create Merge Request'
+            "
           >
-            Create MR
+            {{ checkingActiveMR ? "Checking..." : "Create MR" }}
           </button>
         </div>
       </div>
 
       <!-- Edit Mode Banner -->
       <div
-        v-if="editMode"
+        v-if="editMode && canEditBranch"
         class="px-4 py-2 bg-green-50 border-t border-green-200"
       >
         <div class="flex items-center gap-2 text-sm text-green-800">
@@ -252,6 +276,31 @@
           <span class="font-medium">
             Edit Mode Active: Click and drag features to move/reshape them.
             Click "Save Changes" when done.
+          </span>
+        </div>
+      </div>
+
+      <!-- Permission Warning Banner -->
+      <div
+        v-if="!canEditBranch && !checkingPermission"
+        class="px-4 py-2 bg-red-50 border-t border-red-200"
+      >
+        <div class="flex items-center gap-2 text-sm text-red-800">
+          <svg
+            class="w-5 h-5"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"
+            />
+          </svg>
+          <span class="font-medium">
+            Read-only mode: {{ editPermissionReason }}
           </span>
         </div>
       </div>
@@ -330,11 +379,12 @@
             <input
               v-model="selectedFeature.properties[key]"
               type="text"
-              class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:ring-blue-500 focus:border-blue-500"
+              :disabled="!canEditBranch"
+              class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:ring-blue-500 focus:border-blue-500 disabled:bg-gray-100 disabled:cursor-not-allowed"
             />
           </div>
 
-          <div>
+          <div v-if="canEditBranch">
             <button
               @click="addProperty"
               class="text-sm text-blue-600 hover:text-blue-700 font-medium"
@@ -344,7 +394,7 @@
           </div>
         </div>
 
-        <div class="mt-4 flex gap-2">
+        <div v-if="canEditBranch" class="mt-4 flex gap-2">
           <button
             @click="updateFeatureProperties"
             class="flex-1 px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 text-sm"
@@ -357,6 +407,11 @@
           >
             Delete
           </button>
+        </div>
+
+        <!-- Read-only message -->
+        <div v-else class="mt-4 text-sm text-gray-500 text-center">
+          Read-only: {{ editPermissionReason }}
         </div>
       </div>
 
@@ -639,6 +694,7 @@
 import { ref, onMounted, onBeforeUnmount, computed, toRaw, markRaw } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useDatasetStore } from "../stores/dataset";
+import api from "../services/api";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import "leaflet-draw";
@@ -678,6 +734,9 @@ const creatingMR = ref(false);
 const mapFeatures = ref(new Map());
 const hasActiveMR = ref(false);
 const checkingActiveMR = ref(false);
+const canEditBranch = ref(true);
+const editPermissionReason = ref("");
+const checkingPermission = ref(false);
 
 const currentDataset = computed(() => datasetStore.currentDataset);
 const currentBranch = computed(() => datasetStore.currentBranch);
@@ -703,10 +762,6 @@ const mainHasUpdates = computed(() => {
 
 const mainUpdatesCount = computed(() => {
   return mainUpdates.value?.updatedCount || 0;
-});
-
-const canCreateMR = computed(() => {
-  return !currentBranch.value?.isMain && !hasActiveMR.value;
 });
 
 const initializeMap = () => {
@@ -804,16 +859,57 @@ const addFeatureToMap = (feature) => {
   }
 };
 
+const checkEditPermission = async () => {
+  try {
+    checkingPermission.value = true;
+    const response = await api.canEditBranch(route.params.branchId);
+    canEditBranch.value = response.data.canEdit;
+    editPermissionReason.value = response.data.reason || "";
+
+    if (!canEditBranch.value) {
+      console.log(`Cannot edit branch: ${editPermissionReason.value}`);
+    }
+  } catch (error) {
+    console.error("Failed to check edit permission:", error);
+    canEditBranch.value = false;
+    editPermissionReason.value = "Failed to verify edit permissions";
+  } finally {
+    checkingPermission.value = false;
+  }
+};
+
+const checkActiveMergeRequest = async () => {
+  if (currentBranch.value?.isMain) return;
+
+  try {
+    checkingActiveMR.value = true;
+    const response = await api.checkBranchHasActiveMergeRequest(
+      route.params.branchId
+    );
+    hasActiveMR.value = response.data.hasActiveMergeRequest;
+  } catch (error) {
+    console.error("Failed to check for active merge request:", error);
+  } finally {
+    checkingActiveMR.value = false;
+  }
+};
+
 const toggleEditMode = () => {
+  if (!canEditBranch.value && !editMode.value) {
+    alert(
+      editPermissionReason.value ||
+        "You don't have permission to edit this branch"
+    );
+    return;
+  }
+
   const rawMap = toRaw(map.value);
   const rawDrawnItems = toRaw(drawnItems.value);
 
   if (!editMode.value) {
-    // Enable edit mode
     editMode.value = true;
     drawMode.value = "select";
 
-    // Cancel any active drawing
     if (rawMap._drawingHandler) {
       try {
         rawMap._drawingHandler.disable();
@@ -823,7 +919,6 @@ const toggleEditMode = () => {
       }
     }
 
-    // Enable editing on all layers
     let enabledCount = 0;
     rawDrawnItems.eachLayer((layer) => {
       if (layer.editing) {
@@ -834,13 +929,11 @@ const toggleEditMode = () => {
 
     console.log(`Edit mode enabled on ${enabledCount} layers`);
   } else {
-    // Disable edit mode
     editMode.value = false;
 
     let disabledCount = 0;
     rawDrawnItems.eachLayer((layer) => {
       if (layer.editing && layer.editing.enabled()) {
-        // Update geometry before disabling
         if (layer.feature && layer.feature.id) {
           const newGeometry = layer.toGeoJSON().geometry;
           const oldGeometry = JSON.stringify(layer.feature.geometry);
@@ -862,7 +955,14 @@ const toggleEditMode = () => {
 };
 
 const setDrawMode = (mode) => {
-  // Disable edit mode if active
+  if (!canEditBranch.value && mode !== "select") {
+    alert(
+      editPermissionReason.value ||
+        "You don't have permission to edit this branch"
+    );
+    return;
+  }
+
   if (editMode.value) {
     toggleEditMode();
   }
@@ -940,7 +1040,6 @@ const cancelDrawing = () => {
     }
   }
 
-  // Also disable edit mode if active
   if (editMode.value) {
     toggleEditMode();
   }
@@ -949,6 +1048,16 @@ const cancelDrawing = () => {
 };
 
 const handleFeatureCreated = (e) => {
+  if (!canEditBranch.value) {
+    alert(
+      editPermissionReason.value ||
+        "You don't have permission to edit this branch"
+    );
+    const rawDrawnItems = toRaw(drawnItems.value);
+    rawDrawnItems.removeLayer(e.layer);
+    return;
+  }
+
   hasUnsavedChanges.value = true;
   const layer = e.layer;
 
@@ -976,6 +1085,14 @@ const handleFeatureCreated = (e) => {
 };
 
 const handleFeatureEdited = (e) => {
+  if (!canEditBranch.value) {
+    alert(
+      editPermissionReason.value ||
+        "You don't have permission to edit this branch"
+    );
+    return;
+  }
+
   hasUnsavedChanges.value = true;
 
   let editedCount = 0;
@@ -991,6 +1108,14 @@ const handleFeatureEdited = (e) => {
 };
 
 const handleFeatureDeleted = (e) => {
+  if (!canEditBranch.value) {
+    alert(
+      editPermissionReason.value ||
+        "You don't have permission to edit this branch"
+    );
+    return;
+  }
+
   hasUnsavedChanges.value = true;
 
   let deletedCount = 0;
@@ -1031,6 +1156,14 @@ const closeFeaturePanel = () => {
 };
 
 const updateFeatureProperties = () => {
+  if (!canEditBranch.value) {
+    alert(
+      editPermissionReason.value ||
+        "You don't have permission to edit this branch"
+    );
+    return;
+  }
+
   if (selectedFeature.value && selectedLayer.value) {
     const rawLayer = toRaw(selectedLayer.value);
 
@@ -1042,6 +1175,14 @@ const updateFeatureProperties = () => {
 };
 
 const deleteSelectedFeature = () => {
+  if (!canEditBranch.value) {
+    alert(
+      editPermissionReason.value ||
+        "You don't have permission to edit this branch"
+    );
+    return;
+  }
+
   if (selectedLayer.value) {
     const rawDrawnItems = toRaw(drawnItems.value);
     const rawLayer = toRaw(selectedLayer.value);
@@ -1085,6 +1226,7 @@ const prepareCreateMergeRequest = async () => {
     return;
   }
 
+  // Check again before creating
   await checkActiveMergeRequest();
 
   if (hasActiveMR.value) {
@@ -1126,6 +1268,15 @@ const closeMergeRequestModal = () => {
 };
 
 const saveChanges = async () => {
+  if (!canEditBranch.value) {
+    alert(
+      editPermissionReason.value ||
+        "You don't have permission to edit this branch"
+    );
+    return;
+  }
+
+  // Disable edit mode first if active
   if (editMode.value) {
     toggleEditMode();
   }
@@ -1246,7 +1397,16 @@ const saveChanges = async () => {
     }
   } catch (error) {
     console.error("Failed to save changes:", error);
-    alert("Failed to save changes. Please try again.");
+
+    if (error.response?.status === 403) {
+      alert(
+        error.response?.data?.message ||
+          "You don't have permission to edit this branch"
+      );
+      await checkEditPermission();
+    } else {
+      alert("Failed to save changes. Please try again.");
+    }
   }
 };
 
@@ -1279,24 +1439,12 @@ const createMergeRequest = async () => {
       error.response?.data?.message ||
       "Failed to create merge request. Please try again.";
     alert(errorMessage);
+
+    if (errorMessage.includes("already has an active merge request")) {
+      await checkActiveMergeRequest();
+    }
   } finally {
     creatingMR.value = false;
-  }
-};
-
-const checkActiveMergeRequest = async () => {
-  if (currentBranch.value?.isMain) return;
-
-  try {
-    checkingActiveMR.value = true;
-    const response = await api.checkBranchHasActiveMergeRequest(
-      route.params.branchId
-    );
-    hasActiveMR.value = response.data.hasActiveMergeRequest;
-  } catch (error) {
-    console.error("Failed to check for active merge request:", error);
-  } finally {
-    checkingActiveMR.value = false;
   }
 };
 
@@ -1313,9 +1461,10 @@ onMounted(async () => {
   setTimeout(async () => {
     await loadFeatures();
 
+    await checkEditPermission();
+
     if (!currentBranch.value?.isMain) {
       try {
-        // Check for active merge request
         await checkActiveMergeRequest();
 
         mainUpdates.value = await datasetStore.checkForMainUpdates(
