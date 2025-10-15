@@ -17,9 +17,8 @@
   - [Collaboration Features](#collaboration-features)
 - [Installation](#installation)
   - [Requirements](#requirements)
-  - [Clone the project](#clone-the-project)
-  - [Setup Backend](#setup-backend)
-  - [Setup Frontend](#setup-frontend)
+  - [Clone the Project](#clone-the-project)
+  - [Setup with Docker](#setup-with-docker)
 - [Usage](#usage)
   - [Running the Application](#running-the-application)
   - [User Roles](#user-roles)
@@ -98,86 +97,51 @@ Designed for organizations managing GIS datasets, the system provides a familiar
 
 ### Requirements
 
-**Backend:**
-- Node.js 18+ 
-- PostgreSQL 14+ with PostGIS extension
-- npm or yarn
+- Docker 20.10+
+- Docker Compose 2.0+
 
-**Frontend:**
-- Node.js 18+
-- npm or yarn
-
-### Clone the project
+### Clone the Project
 
 ```bash
 git clone https://github.com/Zyx-98/gis-versioning-system.git
 cd gis-versioning-system
 ```
 
-### Setup Backend
+### Setup with Docker
 
-1. Navigate to server directory:
+Docker installation is the fastest way to get started. All services (frontend, backend, and database) will be set up automatically.
+
+1. **Create environment file:**
 ```bash
-cd server
-```
-
-2. Install dependencies:
-```bash
-npm install
-```
-
-3. Create `.env` file:
-```env
-DATABASE_HOST=localhost
-DATABASE_PORT=5432
-DATABASE_USER=postgres
-DATABASE_PASSWORD=your_password
-DATABASE_NAME=gis_versioning
-JWT_SECRET=your-secret-key-change-this
-```
-
-4. Create PostgreSQL database with PostGIS:
-```sql
-CREATE DATABASE gis_versioning;
-\c gis_versioning
-CREATE EXTENSION postgis;
-```
-
-5. Run migrations:
-```bash
-npm run migration:run
-```
-
-6. Start the server:
-```bash
-npm run start:dev
-```
-
-The API will be available at `http://localhost:3000`
-
-### Setup Frontend
-
-1. Navigate to client directory:
-```bash
-cd client
-```
-
-2. Install dependencies:
-```bash
-npm install
-```
-
-3. Create `.env` file:
-```env
+# Create .env file in the root directory
+cat > .env << EOF
 VITE_API_BASE_URL=http://localhost:3000/api
+EOF
 ```
 
-4. Start the development server:
+2. **Start all services:**
 ```bash
-npm run dev
+docker-compose up -d
 ```
 
-The application will be available at `http://localhost:5173`
+3. **Wait for services to be ready** (first run may take a few minutes):
+```bash
+docker-compose logs -f
+```
+
+4. **Access the application:**
+   - Frontend: http://localhost:5173
+   - Backend API: http://localhost:3000
+   - Database: localhost:5432
+
+5. **Initialize the database** (first time only):
+```bash
+# Run migrations
+docker-compose exec server npm run migration:run
+
+# Run seed
+docker-compose exec server npm run db:seed
+```
 
 <a name="usage"></a>
 
@@ -185,10 +149,13 @@ The application will be available at `http://localhost:5173`
 
 ### Running the Application
 
-1. Start the backend server (port 3000)
-2. Start the frontend development server (port 5173)
-3. Open your browser and navigate to `http://localhost:5173`
-4. Login with default admin credentials or register a new account
+After installation, simply start the Docker services:
+
+```bash
+docker-compose up -d
+```
+
+Then open your browser and navigate to `http://localhost:5173`
 
 ### User Roles
 
@@ -368,24 +335,18 @@ Detailed view of merge request with conflict resolution interface.
 
 - [ ] **Performance**
   - [ ] Pagination for large datasets
-  - [ ] Map tile caching
   - [ ] Lazy loading for features
   - [ ] Database query optimization
 
 - [ ] **Testing**
   - [ ] Unit tests for backend services
   - [ ] Integration tests for API endpoints
-  - [ ] E2E tests for frontend
   - [ ] Performance benchmarking
 
 - [ ] **Documentation**
-  - [ ] API documentation with examples
-  - [ ] User guide with screenshots
-  - [ ] Developer setup guide
-  - [ ] Architecture documentation
+  - [ ] Better documentation
 
 - [ ] **Deployment**
-  - [ ] Docker Compose setup
   - [ ] Kubernetes manifests
   - [ ] CI/CD pipeline
   - [ ] Production configuration guide
